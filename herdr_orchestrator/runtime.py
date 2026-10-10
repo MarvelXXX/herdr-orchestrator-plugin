@@ -184,6 +184,8 @@ def poll_once(store, herdr, now=None):
                 f"请读取 {ROOT / 'skills/herdr-orchestrator/SKILL.md'}，"
                 f"入口命令为 {prefix}。读取后执行 {prefix} ready。"
                 "只编排、派发、回读与汇总；保持已有任务与授权范围。")
+    elif head and head["state"] == "awaiting_user" and head["user_acked_at"] is None:
+        return "awaiting_user"
     elif head:
         followups = store.rows("""SELECT id,accepted_at,ui_status FROM dispatches
             WHERE parent_seq=? AND abandoned_at IS NULL""", (head["seq"],))
@@ -195,9 +197,16 @@ def poll_once(store, herdr, now=None):
                             for item in followups)
         wake_key = f"head:{head['seq']}:{receipts}"
         prefix = command_prefix(store, herdr.socket)
-        text = (f"[Herdr Orchestrator] FIFO 队首 #{head['seq']} 待处理。\n"
-                f"请执行 {prefix} next，继续当前队首；后续派发确认接收后出队，"
-                "不等待执行完成。已有在处理的队首优先继续，不重新派发已提交的任务。")
+        if head["user_acked_at"] is not None:
+            text = (f"[Herdr Orchestrator] FIFO 队首 #{head['seq']} 的用户确认已保存。\n"
+                    f"请执行 {prefix} next 检查后续接收阻塞；只检查当前条，"
+                    "不重复展示已确认的结果，不要求用户重复确认，不读取下一条。"
+                    "后续全部接收后自动出队，不等待执行完成，不重新提交已有派发。")
+        else:
+            text = (f"[Herdr Orchestrator] FIFO 队首 #{head['seq']} 待处理。\n"
+                    f"请执行 {prefix} next，只处理这一条。向用户展示结果后执行 present 持久等待用户；"
+                    "只有当前条的实际用户确认及后续派发接收记录齐全才出队，不等待执行完成。"
+                    "本回合不继续 next；下一条由轮询唤醒。已有派发不重新提交。")
         if attention:
             text += "\n后续 worker 尚未接收且需要检查：" + json.dumps(attention, ensure_ascii=False)
     else:

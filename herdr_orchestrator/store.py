@@ -28,7 +28,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise Conflict(f"unsupported database version: {version}")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -73,8 +73,13 @@ class Store:
                 UNIQUE(socket, message_id)
             );
             CREATE INDEX IF NOT EXISTS events_pending ON events(socket, state, seq);
-            PRAGMA user_version=1;
         """)
+        with self.transaction():
+            if self.db.execute("PRAGMA user_version").fetchone()[0] < 2:
+                for column in ("presented_at REAL", "user_reply TEXT", "user_reply_file TEXT",
+                               "user_acked_at REAL"):
+                    self.db.execute(f"ALTER TABLE events ADD COLUMN {column}")
+                self.db.execute("PRAGMA user_version=2")
 
     def close(self):
         self.db.close()
@@ -143,7 +148,7 @@ class Store:
     def _require_head(self, socket, seq):
         event = self.head(socket)
         if not event or event["seq"] != seq:
-            raise Conflict("only the current FIFO head may be processed or finished")
+            raise Conflict("only the current FIFO head may be processed or acknowledged")
         return event
 
     def create_dispatch(self, socket, task_id, target, identity, spec, parent_seq=None):
@@ -153,7 +158,9 @@ class Store:
             if not session["enabled"]:
                 raise Conflict("coordination is paused")
             if parent_seq is not None:
-                self._require_head(socket, parent_seq)
+                event = self._require_head(socket, parent_seq)
+                if event["user_acked_at"] is not None:
+                    raise Conflict("user acknowledgment seals this head against new follow-up dispatches")
             live = self.one("""SELECT id FROM dispatches WHERE socket=? AND identity=?
                 AND completed_at IS NULL AND abandoned_at IS NULL LIMIT 1""", (socket, identity))
             if live:
@@ -176,6 +183,7 @@ class Store:
                 raise Conflict("dispatch already completed or abandoned")
             self.db.execute("UPDATE dispatches SET accepted_at=COALESCE(accepted_at,?) WHERE id=?",
                             (time.time(), dispatch_id))
+            self._complete_acknowledged_head(dispatch["socket"])
         return self.dispatch(dispatch_id)
 
     def report(self, dispatch_id, message_id, kind, payload):
@@ -206,26 +214,54 @@ class Store:
     def next(self, socket):
         with self.transaction():
             event = self.head(socket)
-            if event:
+            if event and event["state"] == "pending":
                 self.db.execute("UPDATE events SET state='handling' WHERE seq=?", (event["seq"],))
                 event["state"] = "handling"
             return event
 
-    def finish(self, socket, seq, summary):
+    def present(self, socket, seq, summary):
         if not summary.strip():
-            raise Conflict("persist a meaningful summary before finishing")
+            raise Conflict("persist a meaningful summary when presenting the result")
         with self.transaction():
             event = self._require_head(socket, seq)
+            if event["state"] == "awaiting_user":
+                if event["summary"] != summary:
+                    raise Conflict("the result was already presented with a different summary")
+                return event
             if event["state"] != "handling":
-                raise Conflict("read the FIFO head with next before finishing it")
-            followups = self.rows("""SELECT id,accepted_at FROM dispatches
-                WHERE parent_seq=? AND abandoned_at IS NULL""", (seq,))
-            waiting = [item["id"] for item in followups if item["accepted_at"] is None]
-            if waiting:
-                raise Conflict("follow-up worker has not accepted: " + ", ".join(waiting))
-            self.db.execute("UPDATE events SET state='done',summary=?,done_at=? WHERE seq=?",
+                raise Conflict("read the FIFO head with next before presenting it")
+            self.db.execute("UPDATE events SET state='awaiting_user',summary=?,presented_at=? WHERE seq=?",
                             (summary, time.time(), seq))
             self.db.execute("UPDATE sessions SET wake_key=NULL,wake_at=NULL WHERE socket=?", (socket,))
+        return self.one("SELECT * FROM events WHERE seq=?", (seq,))
+
+    def _complete_acknowledged_head(self, socket):
+        event = self.head(socket)
+        if not event or event["state"] != "awaiting_user" or event["user_acked_at"] is None:
+            return
+        waiting = self.one("""SELECT id FROM dispatches WHERE socket=? AND parent_seq=?
+            AND abandoned_at IS NULL AND accepted_at IS NULL LIMIT 1""", (socket, event["seq"]))
+        if waiting:
+            return
+        self.db.execute("UPDATE events SET state='done',done_at=? WHERE seq=?",
+                        (time.time(), event["seq"]))
+        self.db.execute("UPDATE sessions SET wake_key=NULL,wake_at=NULL WHERE socket=?", (socket,))
+
+    def ack(self, socket, seq, reply, reply_file=None):
+        if not reply.strip():
+            raise Conflict("user reply must be non-empty; record the actual user's confirmation")
+        with self.transaction():
+            event = self.one("SELECT * FROM events WHERE socket=? AND seq=?", (socket, seq))
+            if event and event["user_acked_at"] is not None:
+                if event["user_reply"] != reply:
+                    raise Conflict("this event was already acknowledged with a different user reply")
+                return event
+            event = self._require_head(socket, seq)
+            if event["state"] != "awaiting_user":
+                raise Conflict("present the result before recording user acknowledgment")
+            self.db.execute("""UPDATE events SET user_reply=?,user_reply_file=?,user_acked_at=?
+                WHERE seq=?""", (reply, reply_file, time.time(), seq))
+            self._complete_acknowledged_head(socket)
         return self.one("SELECT * FROM events WHERE seq=?", (seq,))
 
     def acknowledge_activation(self, socket):
@@ -235,8 +271,10 @@ class Store:
         if not reason.strip():
             raise Conflict("record the inspection or cancellation reason")
         with self.transaction():
+            dispatch = self.dispatch(dispatch_id)
             self.db.execute("UPDATE dispatches SET abandoned_at=?,abandon_reason=? WHERE id=?",
                             (time.time(), reason, dispatch_id))
+            self._complete_acknowledged_head(dispatch["socket"])
         return self.dispatch(dispatch_id)
 
     def status(self, socket):

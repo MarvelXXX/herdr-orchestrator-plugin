@@ -46,9 +46,12 @@ def parser():
     report.add_argument("--message-id", required=True, help="stable ID to reuse for the same message retry")
     report.add_argument("--status", choices=("completed", "blocked"), required=True)
     report.add_argument("--result-file", required=True)
-    finish = commands.add_parser("finish", help="finish only the FIFO head after required receipts")
-    finish.add_argument("--event", type=int, required=True)
-    finish.add_argument("--summary-file", required=True)
+    present = commands.add_parser("present", help="persist the displayed head summary and wait for the user")
+    present.add_argument("--event", type=int, required=True)
+    present.add_argument("--summary-file", required=True)
+    ack = commands.add_parser("ack", help="record actual user confirmation; dequeue after follow-up receipts")
+    ack.add_argument("--event", type=int, required=True)
+    ack.add_argument("--reply-file", required=True, help="absolute UTF-8 file containing the user's exact reply")
     abandon = commands.add_parser("abandon", help="revoke an inspected attempt; does not stop its agent")
     abandon.add_argument("--dispatch", required=True)
     abandon.add_argument("--reason", required=True)
@@ -186,9 +189,14 @@ def execute(args):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("no explicit worker receipt yet; inspect before retrying dispatch")
                 time.sleep(min(0.2, deadline - time.monotonic()))
-        if command == "finish":
-            return store.finish(args.socket, args.event,
-                                Path(args.summary_file).read_text(encoding="utf-8"))
+        if command in ("present", "ack"):
+            path = Path(args.summary_file if command == "present" else args.reply_file).expanduser()
+            if not path.is_absolute() or not path.is_file():
+                raise Conflict(f"{command} requires an existing absolute UTF-8 file path")
+            content = path.read_text(encoding="utf-8")
+            if command == "present":
+                return store.present(args.socket, args.event, content)
+            return store.ack(args.socket, args.event, content, str(path.resolve()))
         if command == "abandon":
             dispatch = store.dispatch(args.dispatch)
             if dispatch["socket"] != args.socket:
