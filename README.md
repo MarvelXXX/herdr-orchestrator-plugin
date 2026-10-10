@@ -56,11 +56,11 @@ herdr --version
 herdr status server
 python3 --version
 git --version
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.1
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
-核对运行服务的版本与客户端兼容，JSON 中的版本为 0.2.1、`enabled` 为 true，来源与 ref 符合预期。
+核对运行服务的版本与客户端兼容，JSON 中的版本为 0.2.2、`enabled` 为 true，来源与 ref 符合预期。
 交互安装会展示信任预览；已授权的非交互安装可加 `--yes`。命令依据 [官方 CLI 文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
 Codex 用户先检查 integration，仅在缺失或过期时安装：
@@ -147,6 +147,12 @@ sequenceDiagram
 若同一消息明确确认当前条并安排后续，总控先登记后续派发，再保存确认；全部 accept 后才出队。
 确认先于 accept 时，原话和时点先保存，不要求用户重复回复；已确认的接收异常只提醒检查当前条。
 
+worker 的回报按任务复杂度说明结论、实际做了什么、重要具体结果或数据、关键依据与结果文件、
+验证方式及重要输出和验证层级、未解决项或限制及下一步。完成回报不能只有「成功/已完成」或一个路径；
+简单问候保留完整回复原文即可，无需凑字段或固定模板，也不需要推理过程或全部工具日志。
+总控完整读取回报正文，保留判断和后续处理所需的具体内容，区分 worker 自报与总控实际核验；摘要不等于核验。
+长报告先展示充分信息，再提供全文入口；present 保存这份展示正文，`summary-file` 的名称不要求压成简短摘要。
+
 ### 4. 查看状态、暂停与恢复
 
 ```sh
@@ -167,7 +173,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
 ```text
 请安装并配置 Herdr Orchestrator：
 仓库：<owner>/herdr-orchestrator-plugin（从当前仓库地址填写）
-版本：v0.2.1
+版本：v0.2.2
 总控：<用户指定的现有代理名或窗格 ID>
 
 1. 确认 HERDR_ENV=1；检查 Herdr 客户端、当前运行服务的版本和兼容性、Python 3.11+、Git。
@@ -175,7 +181,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
    核对目标代理已发送第一条普通消息且有 agent_session.value，缺失就报告具体问题，不猜身份。
 2. 若已安装，先列出受影响的启用会话并暂停其编排，等待旧轮询进程退出，做 SQLite 一致备份。
    GitHub 安装版按新 ref 重新 install，无需先 uninstall；本地 link 先按官方流程处理，不删除源码或状态。
-3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.1 --yes。
+3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2 --yes。
    再读 herdr plugin list --plugin herdr-orchestrator --json，核对来源、ref、version、enabled，获取 plugin_root。
 4. 确定实际 state-dir 与当前服务 socket：优先使用实际插件上下文的 HERDR_PLUGIN_STATE_DIR。
    若按官方对应版本的目录规则定位，必须核对运行服务的 HOME/XDG_STATE_HOME 和 release/debug 类型。
@@ -198,7 +204,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
 然后按新 ref 重新安装 GitHub 版，**无需先卸载**：
 
 ```sh
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.1 --yes
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2 --yes
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
@@ -208,7 +214,7 @@ herdr plugin list --plugin herdr-orchestrator --json
 
 从 v0.1.0 升级时，插件事务迁移 schema v1 至 v2，仅新增展示时间、确认原文、文件位置和确认时间。
 原任务、回报、摘要、序号和接收记录保留；pending/handling 不自动 done，旧 done 不伪造用户确认。
-v0.2.1 沿用 schema v2；等待用户状态在暂停和重开后保持，显式更换总控仍需激活 skill。
+v0.2.2 沿用 schema v2；等待用户状态在暂停和重开后保持，显式更换总控仍需激活 skill。
 旧 v0.1.0 不能直接打开 schema v2；回退须暂停后恢复升级前的一致备份。
 
 ## 故障排查
@@ -250,7 +256,7 @@ herdr plugin link "$PWD"
 仓库记录的 Linux 集成验证使用 Herdr 0.9.3、Codex 0.162.1，一个真实总控和两个真实 worker：
 两条回报经插件协议入队，先展示第一条，等待超过两分钟不展示第二条；确认后轮询另起一轮展示第二条。
 该验证的模型与终端投递是真实的，处理完成消息是隔离测试输入，不能充当正式会话的实际用户确认。
-未验证 macOS、真实审批 UI、整个服务重启后的模型恢复和正式用户亲自完成两条回报；本版文档整理不扩大这些结论。
+未验证 macOS、真实审批 UI、整个服务重启后的模型恢复和正式用户亲自完成两条回报；本版回报提示调整不扩大这些结论。
 
 <details>
 <summary>高级 CLI 协议（供总控与 worker 使用）</summary>

@@ -128,7 +128,11 @@ def dispatch_task(store, herdr, target, spec, task_id, parent_seq=None):
         f"[Herdr Orchestrator worker] task_id={task_id} dispatch_id={did}",
         "你是执行代理，只执行下述任务；不要接管总控，也不要扩大授权。",
         f"第一步先执行接收确认：{prefix} accept --dispatch {did}",
-        "确认成功后执行任务；完成或遇到业务阻塞时，将实际结果、证据、验证层级及未解决项写入文件。",
+        "确认成功后执行任务；完成或遇到业务阻塞时，将完整回报写入绝对路径 UTF-8 文件。",
+        "按任务复杂度说明结论、实际做了什么、重要具体结果或数据、关键依据与结果文件、"
+        "验证方式及重要输出和验证层级、未解决项或限制及下一步。",
+        "完成回报不能只有「成功/已完成」或一个路径；简单问候保留完整回复原文即可，"
+        "无需凑字段或固定模板，不暴露推理过程或全部工具日志。",
         f"完成后执行：{prefix} report --dispatch {did} --message-id {did}:completed "
         "--status completed --result-file <绝对结果路径>",
         f"业务阻塞时执行：{prefix} report --dispatch {did} --message-id {did}:blocked:1 "
@@ -204,7 +208,11 @@ def poll_once(store, herdr, now=None):
                     "后续全部接收后自动出队，不等待执行完成，不重新提交已有派发。")
         else:
             text = (f"[Herdr Orchestrator] FIFO 队首 #{head['seq']} 待处理。\n"
-                    f"请执行 {prefix} next，只处理这一条。向用户展示结果后执行 present 持久等待用户；"
+                    f"请执行 {prefix} next，只处理这一条。完整读取 worker 回报正文，按任务复杂度保留"
+                    "判断和后续处理所需的具体结果、关键依据、验证输出与层级、限制和下一步。"
+                    "区分 worker 自报与总控实际核验，不以摘要代替核验；长报告先展示充分内容，再提供全文入口。"
+                    "简单问候展示完整回复原文即可。将准备展示的正文写入文件，先执行 present 持久登记，"
+                    "再向用户展示同一份内容并等待确认；"
                     "只有当前条的实际用户确认及后续派发接收记录齐全才出队，不等待执行完成。"
                     "本回合不继续 next；下一条由轮询唤醒。已有派发不重新提交。")
         if attention:
