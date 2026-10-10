@@ -1,6 +1,6 @@
 interface:
   display_name: "Herdr 总控"
-  short_description: "通过 Herdr 插件派发任务、确认 worker 接收并串行汇总持久化回报"
+  short_description: "通过 Herdr 派发任务并逐条展示回报，用户确认处理完后再主动通知下一条"
   default_prompt: "使用 $herdr-orchestrator 作为本会话的 Herdr 总控，按授权派发任务并处理回报。"
 policy:
   allow_implicit_invocation: false

@@ -5,7 +5,7 @@ description: "用户明确通过 Herdr Orchestrator 插件指定本会话为总�
 
 # Herdr 总控
 
-插件 start action 明确指定本会话为总控。只理解任务、选择空间、启动或复用 worker、派发、回读和汇总；业务代码、测试、日志、数据库及配置操作交给 worker。插件不会扩大任务授权，总控职责仍是行为约定。
+插件 start action 或用户明确的 CLI bind 指定本会话为总控。只理解任务、选择空间、启动或复用 worker、派发、回读和汇总；业务代码、测试、日志、数据库及配置操作交给 worker。插件不会扩大任务授权，总控职责仍是行为约定。
 
 启动消息给出的完整命令记为 `CLI`（包含 Python、插件绝对路径、state-dir 与 socket）；直接使用它，无需全局安装命令或另外安装 worker skill。先读 `CLI --help`，再执行 `CLI ready` 确认启用。
 
@@ -14,7 +14,7 @@ description: "用户明确通过 Herdr Orchestrator 插件指定本会话为总�
 - 控制前确认 `HERDR_ENV=1`，用 `herdr workspace list`、`herdr agent list` 核对当前对象、cwd 和状态，按安装版本的 `--help` 操作。用稳定 ID 或唯一名字，不依赖 UI 焦点。
 - 优先遵循用户指定的空间、代理和 cwd；否则按任务领域选择。没有合适空间可按用途新建，背景创建使用 `--no-focus`。
 - 优先复用合适的空闲 worker；同一任务的补充、纠正和追问回原 worker，同批文件修改串行处理。忙的原 worker 先保留任务并等待空闲，不把独立任务混进去。
-- `agent start` 只使用真正空闲的 shell pane；新 Codex 默认加 `--no-daemon`，用户覆盖要求优先。插件依赖 Herdr 的原生 agent_session 身份；缺失时检查对应 integration，不猜会话身份。
+- `agent start` 只使用真正空闲的 shell pane；新 Codex 默认仅加 `--no-daemon`；审批和沙箱配置沿用用户授权，不默认放宽权限。插件依赖 Herdr 的原生 agent_session 身份；缺失时检查对应 integration，不猜会话身份。
 - 写任务 JSON，包含非空字符串 `goal`、`scope`、`authorization`、`acceptance_criteria`，执行 `CLI dispatch --target <worker> --task-file <file>`。程序自动附加 task_id、派发 ID、worker 接收确认和回报命令。
 - 同一任务继续派发时传原 `--task-id`，通常回原 worker；用户指定其他代理或需要多个专用 worker 时遵循实际任务分工。派发立即返回；明确接收以 worker 的 `accept` 记录为准，可以用 `CLI wait-accepted --dispatch <id> --timeout 10` 有界等待，不等待执行完成。总控可继续接收新任务。
 - 提交超时或结果不明先查 `CLI status` 和 `herdr agent get/read`，不要重发已执行的任务。检查后确需撤销一个派发尝试，用 `CLI abandon --dispatch <id> --reason <证据与原因>`；它只撤销回报资格，不停止 worker。
