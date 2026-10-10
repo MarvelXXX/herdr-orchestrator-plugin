@@ -8,7 +8,8 @@ from pathlib import Path
 
 from . import PLUGIN_ID, VERSION
 from .runtime import (Herdr, HerdrError, dispatch_task, identity, require_coordinator,
-                      require_worker, run_daemon, spawn_daemon, task_spec)
+                      require_worker, run_daemon, spawn_daemon, task_spec, control_lock,
+                      pause_daemon, perform_action)
 from .store import Conflict, Store, new_id
 
 
@@ -28,7 +29,8 @@ def parser():
     bind.add_argument("--target", required=True)
     bind.add_argument("--rebind", action="store_true", help="replace a paused coordinator binding")
     action = commands.add_parser("action", help="Herdr action entrypoint")
-    action.add_argument("name", choices=("start", "stop", "status"))
+    action.add_argument("name", choices=("start", "switch", "focus", "continue", "stop", "status",
+                                       "install-shortcuts"))
     commands.add_parser("ready", help="coordinator confirms reading the bundled skill")
     commands.add_parser("next", help="read or resume the current FIFO head")
     dispatch = commands.add_parser("dispatch", help="submit a task to an existing idle worker")
@@ -110,37 +112,32 @@ def execute(args):
     try:
         herdr = Herdr(args.socket)
         command = args.command
-        target = None
         if command == "action":
-            if args.name == "start":
-                context = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON", "{}"))
-                target = context.get("focused_pane_id")
-                if not target:
-                    raise Conflict("start action requires an explicitly selected agent pane")
-                command = "bind"
-            elif args.name == "status":
-                return herdr.call("plugin", "pane", "open", "--plugin", PLUGIN_ID,
-                                  "--entrypoint", "status")
-            else:
-                command = "stop"
+            return perform_action(store, herdr, args.name)
 
         if command == "bind":
-            agent = herdr.agent(target or args.target)
-            bound_target = agent.get("name") or agent["pane_id"]
-            operation = store.rebind if getattr(args, "rebind", False) else store.bind
-            session = operation(args.socket, bound_target, identity(agent))
-            return {"session": session, "daemon": spawn_daemon(store, args.socket)}
+            agent = herdr.agent(args.target)
+            native = identity(agent)
+            with control_lock(store):
+                if args.rebind:
+                    if store.session(args.socket)["enabled"]:
+                        raise Conflict("pause coordination before rebinding")
+                    pause_daemon(store, args.socket)
+                operation = store.rebind if args.rebind else store.bind
+                session = operation(args.socket, agent.get("name") or agent["pane_id"], native)
+                return {"session": session, "daemon": spawn_daemon(store, args.socket)}
         if command == "startup":
-            registered = store.one("SELECT * FROM sessions WHERE socket=?", (args.socket,))
-            if registered and registered["enabled"]:
-                return spawn_daemon(store, args.socket)
-            return {"resumed": False}
+            with control_lock(store):
+                registered = store.one("SELECT * FROM sessions WHERE socket=?", (args.socket,))
+                if registered and registered["enabled"]:
+                    return spawn_daemon(store, args.socket)
+                return {"resumed": False}
         if command == "daemon":
             run_daemon(store, herdr)
             return None
         if command == "stop":
-            store.session(args.socket)
-            store.update_session(args.socket, enabled=0)
+            with control_lock(store):
+                pause_daemon(store, args.socket)
             return {"paused": True, "workers_kept": True, "reports_kept": True}
         if command == "status":
             return store.status(args.socket)

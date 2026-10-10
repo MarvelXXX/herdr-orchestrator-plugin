@@ -19,6 +19,8 @@ flowchart LR
     Skill["内置总控 skill"] -.-> Coordinator
     Coordinator -->|dispatch / next / present / ack| Runtime["插件运行时"]
     Runtime -->|投递任务| Herdr["Herdr CLI / Socket"]
+    User -->|插件动作 / 快捷键| Herdr
+    Herdr -->|动作 context| Runtime
     Herdr --> Workers["Worker Agents"]
     Workers -->|accept / report| Runtime
     Runtime <--> Queue[("本机 SQLite FIFO")]
@@ -56,11 +58,11 @@ herdr --version
 herdr status server
 python3 --version
 git --version
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.3.0
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
-核对运行服务的版本与客户端兼容，JSON 中的版本为 0.2.2、`enabled` 为 true，来源与 ref 符合预期。
+核对运行服务的版本与客户端兼容，JSON 中的版本为 0.3.0、`enabled` 为 true，来源与 ref 符合预期。
 交互安装会展示信任预览；已授权的非交互安装可加 `--yes`。命令依据 [官方 CLI 文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
 Codex 用户先检查 integration，仅在缺失或过期时安装：
@@ -78,11 +80,49 @@ herdr integration install codex
 ### 2. 绑定总控
 
 用 `herdr agent list` 选择已运行的代理。手动方式：在 UI 选择该代理窗格，
-执行 **Orchestrator: use this agent as coordinator** 插件动作。
-`start` 根据 UI 当前 focus 绑定，不根据调用 shell 自动选择总控。
+执行 **Orchestrator: start or resume the coordinator** 插件动作。
+`start` 首次根据动作 context 的 focused pane 绑定；已有绑定时恢复原总控，不因焦点在别处而切换。
 
 后台等待目标代理空闲后发送激活消息。该总控读取内置 skill，并执行消息提供的 `ready` 命令后完成激活；
 动作成功只代表动作已启动。需要保持用户焦点的自动安装，应使用后文的显式 `bind --target`。
+
+### 动作与推荐快捷键
+
+| 完整动作名 | 推荐键 | 行为 |
+| --- | --- | --- |
+| herdr-orchestrator.status | prefix+i | 打开状态窗口 |
+| herdr-orchestrator.start | prefix+a | 首次绑定选中 Agent，之后启动或恢复原总控 |
+| herdr-orchestrator.switch | prefix+shift+a | 显式切换到选中的空闲原生 Agent |
+| herdr-orchestrator.focus | prefix+shift+i | 定位已绑定的总控 |
+| herdr-orchestrator.stop | prefix+shift+s | 暂停并等待轮询退出，保留 Agent 和数据 |
+| herdr-orchestrator.continue | prefix+enter | 当前这条已处理完，确认后等下一轮通知 |
+
+推荐键不会自动安装。用户明确安装时执行：
+
+```sh
+herdr plugin action invoke install-shortcuts --plugin herdr-orchestrator
+herdr plugin log list --plugin herdr-orchestrator
+```
+
+action invoke 返回异步启动回执，不能据此认为安装已完成。先核对该次动作日志已结束，退出码为 0，
+且输出包含 `installed` 或 `already_installed` 结果；失败时按具体诊断处理。完成后再执行：
+
+```sh
+herdr config check
+herdr server reload-config
+```
+
+安装器按 `HERDR_CONFIG_PATH` 或当前 Herdr 配置目录规则定位文件，只追加缺少的 `keys.command`，
+全部使用 `type = "plugin_action"` 和完整动作名，不改 prefix；Herdr 默认 prefix 是 Ctrl+B。
+按键是两段操作：先按 Ctrl+B，松开后再按表中的键；例如 prefix+shift+a 的第二段是 Shift+A（大写 A）。
+候选配置先经真实 `herdr config check`，既有键或原生动作冲突会整次拒绝，不部分写入。
+原文件文字、注释、权限和其他快捷键保留；首次修改保留一份权限 0600 的 `.herdr-orchestrator.bak`，重复安装幂等。
+安装后重载配置；远程客户端默认使用客户端本地键，可按官方选项选择服务端键。SSH 登录后直接运行 Herdr 时，配置属于该运行主机。
+
+switch 先校验新总控身份与空闲状态，旧总控忙时拒绝；旧窗格已关闭可恢复到新总控，其他传输错误直接上报。
+切换先暂停并有界等待旧轮询释放锁，再重新绑定、启动和激活；不关闭 Agent，不丢弃任务、确认或等待状态。
+同目标重试保留激活状态。等待退出超时会明确报错并保持暂停；等待期间新目标变忙或身份改变也不会绑定。
+focus 仅定位，不读取或确认队列。
 
 ### 3. 发任务并逐条处理
 
@@ -131,8 +171,13 @@ sequenceDiagram
     Runtime->>Queue: A 变为 awaiting_user
     Coordinator->>User: 只展示 A
     Note over Queue,Poller: 未确认 A 时静默，B 保持 pending
-    User->>Coordinator: 这条处理完了，继续下一条
-    Coordinator->>Runtime: ack A，保存实际用户原话
+    alt 用户消息确认
+        User->>Coordinator: 这条处理完了，继续下一条
+        Coordinator->>Runtime: ack A，保存实际用户原话
+    else 显式用户插件动作
+        User->>Runtime: Herdr continue 动作确认 A
+        Runtime->>Queue: 保存动作来源与 context，原话留空
+    end
     Runtime->>Queue: A 变为 done
     Note over Coordinator,Poller: 本回合结束，不连续调用 next
     Poller->>Queue: 后续轮询读取 B
@@ -143,6 +188,9 @@ sequenceDiagram
 ```
 
 说「这条处理完了」或「继续下一条」确认当前条。普通新任务、无关消息、仅追问或补充信息不自动确认。
+也可在已绑定且空闲的总控窗格触发 continue，含义是当前条已经处理完；必须已 present 等待用户。
+空队列、未展示、错焦点或总控忙时拒绝；重复动作不越过当前条，已确认等待 accept 时不要求二次确认。
+continue 不直接 next，不循环清队列；下一条仍由轮询在另一个回合唤醒。模型不得自动调用它代替用户。
 同任务补充通常保留原 task ID 并交原 worker；用户指定其他代理或需要专用 worker 时按实际分工处理。
 若同一消息明确确认当前条并安排后续，总控先登记后续派发，再保存确认；全部 accept 后才出队。
 确认先于 accept 时，原话和时点先保存，不要求用户重复回复；已确认的接收异常只提醒检查当前条。
@@ -162,8 +210,9 @@ herdr plugin log list --plugin herdr-orchestrator
 ```
 
 状态窗口显示绑定、轮询、队列、接收和错误；关闭窗口只关闭视图。
-stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原总控执行 start。
-代理身份变化时需先暂停，再显式 rebind。插件安装和 enabled 状态在同一用户的各 Herdr 会话间共享。
+stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 start，它使用已有绑定。
+代理身份变化或用户要更换总控时，选中新目标并执行 switch；高级 CLI 仍可暂停后显式 rebind。
+插件安装和 enabled 状态在同一用户的各 Herdr 会话间共享。
 
 ## 交给 Agent 安装
 
@@ -173,7 +222,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
 ```text
 请安装并配置 Herdr Orchestrator：
 仓库：<owner>/herdr-orchestrator-plugin（从当前仓库地址填写）
-版本：v0.2.2
+版本：v0.3.0
 总控：<用户指定的现有代理名或窗格 ID>
 
 1. 确认 HERDR_ENV=1；检查 Herdr 客户端、当前运行服务的版本和兼容性、Python 3.11+、Git。
@@ -181,7 +230,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
    核对目标代理已发送第一条普通消息且有 agent_session.value，缺失就报告具体问题，不猜身份。
 2. 若已安装，先列出受影响的启用会话并暂停其编排，等待旧轮询进程退出，做 SQLite 一致备份。
    GitHub 安装版按新 ref 重新 install，无需先 uninstall；本地 link 先按官方流程处理，不删除源码或状态。
-3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2 --yes。
+3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.3.0 --yes。
    再读 herdr plugin list --plugin herdr-orchestrator --json，核对来源、ref、version、enabled，获取 plugin_root。
 4. 确定实际 state-dir 与当前服务 socket：优先使用实际插件上下文的 HERDR_PLUGIN_STATE_DIR。
    若按官方对应版本的目录规则定位，必须核对运行服务的 HOME/XDG_STATE_HOME 和 release/debug 类型。
@@ -192,6 +241,10 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
    安装者不冒充总控执行 ready，不复制 skill 到全局目录；新 Codex 仅默认 --no-daemon，权限沿用用户授权。
 7. 回读 CLI status 确认目标、enabled、activated、轮询与错误，核对插件日志，报告实际完成和缺项。
    不伪造用户 ack；业务闭环测试只在另获授权的临时范围内运行，并标明测试输入与真实用户确认的区别。
+8. 只有用户明确要求安装推荐快捷键，才调用 install-shortcuts 动作；异步启动回执不代表完成。
+   核对动作日志已结束、退出码 0 和 installed/already_installed 输出，再 config check 和 reload-config。
+   检查备份结果；prefix 为两段操作，先按原 prefix 并松开，再按第二段键，Shift+A 即大写 A。
+   不覆盖已占用键，不改变 prefix；已有绑定的 start 仅恢复，切换必须由用户显式选择 switch。
 ```
 
 插件运行上下文与目录用途见 [官方插件文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/plugins.mdx)。
@@ -204,7 +257,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时对原�
 然后按新 ref 重新安装 GitHub 版，**无需先卸载**：
 
 ```sh
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.2.2 --yes
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.3.0 --yes
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
@@ -212,10 +265,11 @@ herdr plugin list --plugin herdr-orchestrator --json
 从 plugin list 重新取得实际 plugin_root，核对原状态目录与版本；确认旧轮询已停，再用新版入口恢复各会话绑定。
 参见 [官方 CLI 的重装规则](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
-从 v0.1.0 升级时，插件事务迁移 schema v1 至 v2，仅新增展示时间、确认原文、文件位置和确认时间。
+从 v0.1.0 或 v0.2.x 升级时，插件事务迁移 schema v1/v2 至 v3，保留展示与消息确认字段，新增确认来源和动作 context。
 原任务、回报、摘要、序号和接收记录保留；pending/handling 不自动 done，旧 done 不伪造用户确认。
-v0.2.2 沿用 schema v2；等待用户状态在暂停和重开后保持，显式更换总控仍需激活 skill。
-旧 v0.1.0 不能直接打开 schema v2；回退须暂停后恢复升级前的一致备份。
+只有既有确认时点和非空原话同时存在，迁移才标为 message；缺证据的历史确认来源保留为空，不补造动作或消息。
+v0.3.0 使用 schema v3；等待用户状态在暂停和重开后保持，显式更换总控仍需激活 skill。
+旧版本不能直接打开 schema v3；回退须暂停后恢复升级前的一致备份。
 
 ## 故障排查
 
@@ -229,6 +283,7 @@ v0.2.2 沿用 schema v2；等待用户状态在暂停和重开后保持，显式
 | 派发超时或投递不明 | 查已保存的派发及 worker 状态；超时不代表未执行，不盲目重派。 |
 | 总控被替换 | 暂停后显式 bind --target 并加 --rebind，保留历史与等待状态。 |
 | 本地 link 与 GitHub 安装冲突 | 先暂停，再 unlink 本地插件后安装；源码与数据不主动删除。 |
+| Agent 调用插件被沙箱拒绝 | 总控和 worker 需有 Herdr socket 与插件状态目录访问权限；按用户已有授权配置处理。安装 integration 不会自动解除沙箱限制，不默认放宽权限。 |
 
 卸载前暂停各会话并备份需要的数据。`plugin uninstall herdr-orchestrator` 不关闭 worker；数据生命周期由使用者管理。
 
@@ -236,7 +291,8 @@ v0.2.2 沿用 schema v2；等待用户状态在暂停和重开后保持，显式
 
 - 运行数据持久化在本机，插件不将其写入 GitHub；Agent 与模型按各自配置处理上下文，不承诺上下文永远留在本机。不要把运行数据放进安装源码目录。
 - FIFO 以 SQLite 入队顺序为准，只有当前队首可展示或首次确认。未确认的 awaiting_user 保持静默。
-- ack 是总控记录实际用户消息的入口；程序校验调用会话、event 与状态，不能证明真人原话或自然语言确认意图。
+- ack 保存 message 来源、实际用户原文和文件位置；continue 保存 plugin_action 来源、确认时点和实际 context，原文和文件位置为空。
+- action 校验插件 ID、动作 ID、Herdr context 和原生总控身份；不要求 HERDR_PLUGIN_EVENT=action。invocation_source 按实际 keybinding/cli/api 等元数据记录，不声称能证明真人按键或消息真实性。
 - 同 event 同原文重试幂等，保留确认时点；冲突原文拒绝，旧确认不会确认新的队首。确认后封闭该条的后续派发。
 - 出队要求持久用户确认与所有未撤销后续派发 accept；代理 idle/done、超时和 accept 均不是用户确认或业务完成。
 - 每 5 秒是轮询周期，不是最终通知时延承诺；总控忙、被审批阻塞或宿主离线时通知推迟。未展示通知最多每分钟重试。
@@ -252,11 +308,12 @@ python3 -m unittest discover -s tests -v
 herdr plugin link "$PWD"
 ```
 
-现有 32 项 unittest 覆盖 SQLite、并发生产者、CLI 子进程、FIFO、确认/接收门槛、迁移、重入和身份隔离；传输使用 FakeHerdr 或模拟 CLI。
+unittest 覆盖 SQLite、并发生产者、CLI 子进程、FIFO、确认/接收门槛、v1/v2 迁移、动作 context、切换锁、配置保留及冲突；Agent 传输使用 FakeHerdr 或模拟 CLI，配置测试在 Herdr 可用时调用真实 config check。
 仓库记录的 Linux 集成验证使用 Herdr 0.9.3、Codex 0.162.1，一个真实总控和两个真实 worker：
 两条回报经插件协议入队，先展示第一条，等待超过两分钟不展示第二条；确认后轮询另起一轮展示第二条。
 该验证的模型与终端投递是真实的，处理完成消息是隔离测试输入，不能充当正式会话的实际用户确认。
-未验证 macOS、真实审批 UI、整个服务重启后的模型恢复和正式用户亲自完成两条回报；本版回报提示调整不扩大这些结论。
+隔离 Linux 验证会区分真实 Herdr 动作入口、程序输入的测试按键和实际用户确认；模拟 context 或按键不能当作真人操作证明。
+未验证 macOS、真实审批 UI、整个服务重启后的模型恢复和正式用户亲自完成两条回报；本版新增动作不扩大这些结论。
 
 <details>
 <summary>高级 CLI 协议（供总控与 worker 使用）</summary>
@@ -281,7 +338,8 @@ CLI abandon --dispatch DISPATCH_ID --reason 已检查的撤销原因
 
 任务 JSON 必须含非空字符串 goal、scope、authorization、acceptance_criteria。worker 的具体命令由派发消息提供，必须先 accept 再执行，结果状态为 completed 或 blocked。
 结果、摘要与确认文件必须是绝对路径 UTF-8 文件，正文持久保存。next 只将 pending 改为 handling；present 保存摘要并进入 awaiting_user，相同摘要重试幂等。
-只有最新实际用户消息明确确认当前条才 ack；普通追问不自动出队。确认先于 accept 时保留原话，接收齐全后自动出队，不要求重说。
+只有最新实际用户消息明确确认当前条才 ack；显式用户 continue 动作单独记录来源，模型不得自动调用。普通追问不自动出队。
+确认先于 accept 时保留原确认和来源，接收齐全后自动出队，不要求重说。
 确认后结束本回合，下一条由轮询唤醒，不批量 next。finish 已移除；abandon 撤销回报资格，不停止 worker。
 
 </details>

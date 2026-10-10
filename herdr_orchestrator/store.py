@@ -28,7 +28,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
             raise Conflict(f"unsupported database version: {version}")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -80,6 +80,13 @@ class Store:
                                "user_acked_at REAL"):
                     self.db.execute(f"ALTER TABLE events ADD COLUMN {column}")
                 self.db.execute("PRAGMA user_version=2")
+            if self.db.execute("PRAGMA user_version").fetchone()[0] < 3:
+                self.db.execute("ALTER TABLE events ADD COLUMN user_ack_source TEXT")
+                self.db.execute("ALTER TABLE events ADD COLUMN user_ack_context TEXT")
+                self.db.execute("""UPDATE events SET user_ack_source='message'
+                    WHERE user_acked_at IS NOT NULL AND user_reply IS NOT NULL
+                    AND length(user_reply)>0""")
+                self.db.execute("PRAGMA user_version=3")
 
     def close(self):
         self.db.close()
@@ -250,17 +257,26 @@ class Store:
     def ack(self, socket, seq, reply, reply_file=None):
         if not reply.strip():
             raise Conflict("user reply must be non-empty; record the actual user's confirmation")
+        return self._ack(socket, seq, reply, reply_file, "message", None)
+
+    def ack_action(self, socket, seq, context):
+        return self._ack(socket, seq, None, None, "plugin_action",
+                         json.dumps(context, ensure_ascii=False, sort_keys=True))
+
+    def _ack(self, socket, seq, reply, reply_file, source, context):
         with self.transaction():
             event = self.one("SELECT * FROM events WHERE socket=? AND seq=?", (socket, seq))
             if event and event["user_acked_at"] is not None:
-                if event["user_reply"] != reply:
+                if source == "message" and (event["user_ack_source"] != source
+                                             or event["user_reply"] != reply):
                     raise Conflict("this event was already acknowledged with a different user reply")
                 return event
             event = self._require_head(socket, seq)
-            if event["state"] != "awaiting_user":
+            if event["state"] != "awaiting_user" or event["presented_at"] is None:
                 raise Conflict("present the result before recording user acknowledgment")
-            self.db.execute("""UPDATE events SET user_reply=?,user_reply_file=?,user_acked_at=?
-                WHERE seq=?""", (reply, reply_file, time.time(), seq))
+            self.db.execute("""UPDATE events SET user_reply=?,user_reply_file=?,user_acked_at=?,
+                user_ack_source=?,user_ack_context=? WHERE seq=?""",
+                (reply, reply_file, time.time(), source, context, seq))
             self._complete_acknowledged_head(socket)
         return self.one("SELECT * FROM events WHERE seq=?", (seq,))
 

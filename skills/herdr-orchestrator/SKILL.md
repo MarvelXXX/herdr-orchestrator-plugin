@@ -7,6 +7,10 @@ description: "用户明确通过 Herdr Orchestrator 插件指定本会话为总�
 
 插件 start action 或用户明确的 CLI bind 指定本会话为总控。只理解任务、选择空间、启动或复用 worker、派发、回读和汇总；业务代码、测试、日志、数据库及配置操作交给 worker。插件不会扩大任务授权，总控职责仍是行为约定。
 
+start 首次绑定用户选中的原生 Agent；已有绑定时只启动或恢复原总控，不按当前焦点换人。只有用户显式 switch 才更换总控，要求新总控空闲，旧总控若仍存在也须空闲；已关闭的旧窗格允许恢复。switch 等旧轮询释放锁后激活新总控，任务与等待用户状态保留；同目标重试保留激活状态。focus 只定位总控。stop 等待轮询退出，不关闭 Agent。
+
+用户可显式执行 install-shortcuts 安装推荐快捷键；不在 build/startup 自动改配置。冲突时整次拒绝，不覆盖其他键或 prefix。action invoke 是异步启动回执，先核对动作日志退出码 0 和 installed/already_installed 输出，再检查和重载配置。模型不得自动调用 continue 来代替用户确认，也不得通过伪造 action 环境或 context 绕过等待。
+
 启动消息给出的完整命令记为 `CLI`（包含 Python、插件绝对路径、state-dir 与 socket）；直接使用它，无需全局安装命令或另外安装 worker skill。先读 `CLI --help`，再执行 `CLI ready` 确认启用。
 
 ## 选空间与派发
@@ -29,15 +33,15 @@ description: "用户明确通过 Herdr Orchestrator 插件指定本会话为总�
 
 1. 被唤醒后只执行一次 `CLI next`，取得或恢复当前唯一队首。完整读取持久化正文，按需核对证据和实际验证层级；代理 idle/done 不等于业务完成。`pending` 会变为 `handling`，重入保留已有状态。
 2. 对 `handling` 队首，把准备向用户展示的本条结果写入绝对路径 UTF-8 文件，执行 `CLI present --event <序号> --summary-file <文件>`，向用户展示同一份内容，然后结束本回合。必须完成 present 的持久记录；不批量调用 next。
-3. `awaiting_user` 表示已登记展示并等待用户。重入时检查现有 summary、user_reply、user_acked_at 和 followups，不自动重复展示。没有用户确认时不催用户，也不处理已到达的下一条。暂停或重启不会解除等待。
-4. 用户明确说「这条处理完了」「继续下一条」，或明确确认当前条并给出后续安排时，关联到当前 event ID。将**最新实际用户消息原文**写入绝对路径 UTF-8 文件，执行 `CLI ack --event <当前序号> --reply-file <文件>`。这是总控记录用户消息的操作，程序不能证明原话真实性；不能编造答复或用模型总结替换原文。
+3. `awaiting_user` 表示已登记展示并等待用户。重入时检查现有 summary、user_reply、user_acked_at、user_ack_source、user_ack_context 和 followups，不自动重复展示。没有用户确认时不催用户，也不处理已到达的下一条。暂停或重启不会解除等待。
+4. 用户明确说「这条处理完了」「继续下一条」，或明确确认当前条并给出后续安排时，关联到当前 event ID。将**最新实际用户消息原文**写入绝对路径 UTF-8 文件，执行 `CLI ack --event <当前序号> --reply-file <文件>`，确认来源为 message。用户也可在已绑定且空闲的总控窗格显式触发 continue 插件动作，表示“当前这条已经处理完，继续下一条”；程序记录 plugin_action 来源和实际动作 context，user_reply/user_reply_file 留空。keybinding、CLI、API 等来源按真实元数据保存，不要求 HERDR_PLUGIN_EVENT=action。程序不能证明真人按键或消息真实性；不能编造答复或用模型总结替换原文。
 5. 普通新任务、无关消息、仅仅追问或补充信息都不是完成确认。新任务正常派发，但当前队首继续等待；当前条的追问和补充通常交原 worker、保留原 task ID，并传 `--parent-event <当前序号>`。只有用户明确表示本条已处理完或允许转到下一条才 ack；若同条消息同时确认并要求后续，先登记所需后续派发，再 ack。确认后该条不再接受新 parent-event 派发。
 6. ack 先持久保存用户原文和确认时点，再检查全部未撤销后续派发的 accept。若未接收，确认仍保留，不要求用户再说一遍；最后一份接收记录到达后自动出队，不等待 completed。此时若 worker blocked/missing/replaced，轮询只提醒检查当前接收阻塞，不重复展示结果、不越过队首。中断后恢复原派发，不重新提交。
 7. 用户确认且没有后续派发时立即出队。不要在 ack 后继续 next 或使用 while 循环清队列；下一条由后台轮询主动唤醒。相同原文对同一 event 的 ack 重试幂等，冲突原文会报错；不能把旧确认用于新 event。`finish` 已移除。
 
-所有需逐条回报的任务都通过 CLI dispatch/accept/report 入队。直接用原生 `herdr agent prompt --wait` 获取的终端答复不进入此队列，不能用它批量读取结果代替协议。用户确认只能来自最新实际用户消息；超时、代理 idle/done、后续 worker accept 都不代表用户确认。
+所有需逐条回报的任务都通过 CLI dispatch/accept/report 入队。直接用原生 `herdr agent prompt --wait` 获取的终端答复不进入此队列，不能用它批量读取结果代替协议。用户确认只能来自最新实际用户消息或显式用户插件动作；超时、代理 idle/done、后续 worker accept 都不代表用户确认。
 
-展示应围绕用户需要的结果。问候只需说明目标空间或代理并保留完整回复正文；无需展示事件序号、协议命令、内部摘要路径或引用 skill 来解释处理规则。用户直接说「这条处理完了」或「继续下一条」即可，不把处理完成确认当成新的执行授权审批。
+展示应围绕用户需要的结果。问候只需说明目标空间或代理并保留完整回复正文；无需展示事件序号、协议命令、内部摘要路径或引用 skill 来解释处理规则。用户可直接说「这条处理完了」「继续下一条」或使用 continue 快捷动作，不把处理完成确认当成新的执行授权审批。
 
 业务阻塞回报包含结果位置；工具审批 UI 阻塞由程序记录状态变化，但不生成业务结论、不代答审批。先 inspect，缺口径或未授权操作向用户提问；已有答复和授权不重复确认。只有用户明确要求才关闭指定空间、窗格或代理，暂停插件保留 worker 与历史队列。
 

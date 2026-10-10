@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from contextlib import contextmanager
 
 from . import PLUGIN_ID
 from .store import Conflict
@@ -15,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ENTRY = ROOT / "orchestrator.py"
 POLL_SECONDS = 5
 WAKE_RETRY_SECONDS = 60
+DAEMON_TIMEOUT = 30
 
 
 class HerdrError(RuntimeError):
@@ -82,6 +84,112 @@ class Herdr:
 def command_prefix(store, socket):
     return shlex.join([sys.executable, str(ENTRY), "--state-dir", str(store.directory),
                        "--socket", socket])
+
+
+@contextmanager
+def control_lock(store):
+    with (store.directory / "control.lock").open("a") as lock:
+        deadline = time.monotonic() + DAEMON_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("another coordinator action is still running")
+                time.sleep(0.05)
+        yield
+
+
+def pause_daemon(store, socket):
+    session = store.session(socket)
+    store.update_session(socket, enabled=0)
+    with (store.directory / f"session-{session['id']}.lock").open("a") as lock:
+        deadline = time.monotonic() + DAEMON_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("coordination paused, but the old daemon has not released its lock")
+                time.sleep(0.05)
+        store.update_session(socket, pid=None)
+
+
+def action_context(herdr, name):
+    if (herdr.env.get("HERDR_PLUGIN_ID") != PLUGIN_ID
+            or herdr.env.get("HERDR_PLUGIN_ACTION_ID") != name):
+        raise Conflict("invoke this action through Herdr with the matching plugin and action ID")
+    context = json.loads(herdr.env.get("HERDR_PLUGIN_CONTEXT_JSON", "null"))
+    if not isinstance(context, dict):
+        raise Conflict("action requires Herdr plugin context")
+    source = context.get("invocation_source")
+    if source is not None and (not isinstance(source, str) or not source):
+        raise Conflict("invalid action invocation source")
+    return context
+
+
+def perform_action(store, herdr, name):
+    context = action_context(herdr, name)
+    # Capture the event before transport calls or lock waits; never acknowledge a later head.
+    event = store.head(herdr.socket) if name == "continue" else None
+    if name == "continue" and (not event or event["state"] != "awaiting_user"
+                               or event["presented_at"] is None):
+        raise Conflict("there is no presented FIFO head to confirm")
+    with control_lock(store):
+        if name == "status":
+            return herdr.call("plugin", "pane", "open", "--plugin", PLUGIN_ID,
+                              "--entrypoint", "status")
+        if name == "stop":
+            pause_daemon(store, herdr.socket)
+            return {"paused": True, "workers_kept": True, "reports_kept": True}
+        if name == "install-shortcuts":
+            from .shortcuts import install_shortcuts
+            return install_shortcuts(herdr)
+        current = store.one("SELECT * FROM sessions WHERE socket=?", (herdr.socket,))
+        if name in ("start", "switch"):
+            target = current["coordinator"] if name == "start" and current else context.get("focused_pane_id")
+            if not target:
+                raise Conflict("select an agent pane before binding a coordinator")
+            agent = herdr.agent(target)
+            native = identity(agent)
+            bound_target = agent.get("name") or agent["pane_id"]
+            if name == "switch" and agent["agent_status"] not in ("idle", "done"):
+                raise Conflict("the selected coordinator must be idle before switching")
+            if current and current["identity"] != native:
+                if name != "switch":
+                    raise Conflict("coordinator identity changed; use the explicit switch action")
+                try:
+                    old = herdr.agent(current["coordinator"])
+                except HerdrError as error:
+                    if error.code not in ("agent_not_found", "pane_not_found"):
+                        raise
+                    old = None
+                if old and old["agent_status"] not in ("idle", "done"):
+                    raise Conflict("the current coordinator is busy; wait before switching")
+                pause_daemon(store, herdr.socket)
+                selected = herdr.agent(target)
+                if identity(selected) != native or selected["agent_status"] not in ("idle", "done"):
+                    raise Conflict("selected coordinator changed while pausing; coordination remains paused")
+                session = store.rebind(herdr.socket, bound_target, native)
+            else:
+                session = store.bind(herdr.socket, bound_target, native)
+            return {"session": session, "daemon": spawn_daemon(store, herdr.socket)}
+        session = store.session(herdr.socket)
+        coordinator = herdr.agent(session["coordinator"])
+        if identity(coordinator) != session["identity"]:
+            raise Conflict("coordinator identity changed; switch explicitly")
+        if name == "focus":
+            return herdr.call("agent", "focus", coordinator["pane_id"])
+        if name == "continue":
+            if context.get("focused_pane_id") != coordinator["pane_id"]:
+                raise Conflict("continue must be invoked in the bound coordinator pane")
+            if coordinator["agent_status"] not in ("idle", "done"):
+                raise Conflict("wait for the coordinator to become idle before confirming")
+            return store.ack_action(herdr.socket, event["seq"],
+                                    {**context, "plugin_id": PLUGIN_ID, "action_id": name})
+        raise ValueError(f"unknown action: {name}")
 
 
 def require_coordinator(store, herdr):
@@ -235,11 +343,25 @@ def poll_once(store, herdr, now=None):
 def spawn_daemon(store, socket):
     session = store.session(socket)
     log = store.directory / f"session-{session['id']}.log"
+    with (store.directory / f"session-{session['id']}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"running_pid": session["pid"], "log": str(log)}
     with log.open("a") as output:
         process = subprocess.Popen([sys.executable, str(ENTRY), "--state-dir", str(store.directory),
                                     "--socket", socket, "daemon"],
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=output,
                                    start_new_session=True)
+    deadline = time.monotonic() + DAEMON_TIMEOUT
+    while store.session(socket)["pid"] != process.pid:
+        if process.poll() is not None:
+            store.update_session(socket, enabled=0)
+            raise Conflict(f"daemon exited before acquiring its lock; inspect {log}")
+        if time.monotonic() >= deadline:
+            store.update_session(socket, enabled=0)
+            raise TimeoutError(f"daemon startup timed out; coordination paused, inspect {log}")
+        time.sleep(0.05)
     return {"started_pid": process.pid, "log": str(log)}
 
 

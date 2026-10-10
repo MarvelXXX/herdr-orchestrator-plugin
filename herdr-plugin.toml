@@ -1,6 +1,6 @@
 id = "herdr-orchestrator"
 name = "Orchestrator"
-version = "0.2.2"
+version = "0.3.0"
 min_herdr_version = "0.9.3"
 description = "Persistent user-acknowledged FIFO, worker receipts and a polling coordinator wake-up."
 platforms = ["linux", "macos"]
@@ -13,9 +13,33 @@ command = ["python3", "orchestrator.py", "startup"]
 
 [[actions]]
 id = "start"
-title = "Orchestrator: use this agent as coordinator"
-contexts = ["pane"]
+title = "Orchestrator: start or resume the coordinator"
+contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "start"]
+
+[[actions]]
+id = "switch"
+title = "Orchestrator: switch coordinator to this agent"
+contexts = ["pane"]
+command = ["python3", "orchestrator.py", "action", "switch"]
+
+[[actions]]
+id = "focus"
+title = "Orchestrator: focus the bound coordinator"
+contexts = ["global", "pane", "workspace"]
+command = ["python3", "orchestrator.py", "action", "focus"]
+
+[[actions]]
+id = "continue"
+title = "Orchestrator: current report handled, continue to the next"
+contexts = ["pane"]
+command = ["python3", "orchestrator.py", "action", "continue"]
+
+[[actions]]
+id = "install-shortcuts"
+title = "Orchestrator: install recommended shortcuts"
+contexts = ["global", "pane", "workspace"]
+command = ["python3", "orchestrator.py", "action", "install-shortcuts"]
 
 [[actions]]
 id = "stop"
