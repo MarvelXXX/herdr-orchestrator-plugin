@@ -10,12 +10,7 @@ from . import PLUGIN_ID
 from .store import Conflict
 
 SHORTCUTS = {
-    "prefix+i": "status",
-    "prefix+a": "start",
-    "prefix+shift+a": "switch",
-    "prefix+shift+i": "focus",
-    "prefix+shift+s": "stop",
-    "prefix+enter": "continue",
+    "prefix+shift+o": "status",
 }
 
 

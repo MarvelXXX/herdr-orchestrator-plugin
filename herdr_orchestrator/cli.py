@@ -6,7 +6,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import PLUGIN_ID, VERSION
+from . import VERSION
+from .panel import board
 from .runtime import (Herdr, HerdrError, dispatch_task, identity, require_coordinator,
                       require_worker, run_daemon, spawn_daemon, task_spec, control_lock,
                       pause_daemon, perform_action)
@@ -23,7 +24,7 @@ def parser():
     commands.add_parser("startup", help="resume a previously enabled coordinator")
     commands.add_parser("daemon", help="internal polling process")
     commands.add_parser("status", help="read task and FIFO state as JSON")
-    commands.add_parser("board", help="read-only status popup")
+    commands.add_parser("board", help="Chinese task panel; non-TTY output is read-only")
     commands.add_parser("stop", help="pause wake-ups, keeping workers and queued reports")
     bind = commands.add_parser("bind", help="explicitly bind a coordinator")
     bind.add_argument("--target", required=True)
@@ -64,35 +65,6 @@ def state_directory(args):
     if not args.state_dir:
         raise Conflict("use the Herdr plugin action, or copy its command with --state-dir")
     return Path(args.state_dir).expanduser().resolve()
-
-
-def board(store, socket):
-    while True:
-        data = store.status(socket)
-        session = data["session"]
-        if sys.stdout.isatty():
-            print("\033[2J\033[H", end="")
-        print(f"Orchestrator {VERSION} | {'运行中' if session['enabled'] else '已暂停'}")
-        print(f"总控: {session['coordinator']} | 待处理: {len(data['pending'])}")
-        print(f"后台 PID: {session['pid']} | 最近轮询: {session['tick_at']}")
-        if session["error"]:
-            print("错误:", session["error"])
-        print("\n任务 / 派发 / 代理 / 接收确认 / 状态")
-        for dispatch in data["dispatches"]:
-            state = ("已撤销" if dispatch["abandoned_at"] else
-                     "已回报完成" if dispatch["completed_at"] else dispatch["delivery"])
-            print(dispatch["task_id"], dispatch["id"], dispatch["target"],
-                  "已接收" if dispatch["accepted_at"] else "待接收", state,
-                  dispatch["ui_status"] or "", sep=" | ")
-        print("\nFIFO 序号 / 类型 / 处理状态 / 回报位置")
-        for event in data["pending"]:
-            payload = json.loads(event["payload"])
-            print(event["seq"], event["kind"], event["state"],
-                  payload.get("result_file", payload.get("note", "")), sep=" | ")
-        print("\n关闭此窗口只关闭状态视图；暂停请使用插件 stop action。", flush=True)
-        if not sys.stdout.isatty():
-            return
-        time.sleep(2)
 
 
 def execute(args):
@@ -142,7 +114,7 @@ def execute(args):
         if command == "status":
             return store.status(args.socket)
         if command == "board":
-            board(store, args.socket)
+            board(store, herdr)
             return None
         if command == "accept":
             require_worker(store, herdr, args.dispatch)

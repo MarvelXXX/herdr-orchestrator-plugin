@@ -9,7 +9,9 @@ description: "用户明确通过 Herdr Orchestrator 插件指定本会话为总�
 
 start 首次绑定用户选中的原生 Agent；已有绑定时只启动或恢复原总控，不按当前焦点换人。只有用户显式 switch 才更换总控，要求新总控空闲，旧总控若仍存在也须空闲；已关闭的旧窗格允许恢复。switch 等旧轮询释放锁后激活新总控，任务与等待用户状态保留；同目标重试保留激活状态。focus 只定位总控。stop 等待轮询退出，不关闭 Agent。
 
-用户可显式执行 install-shortcuts 安装推荐快捷键；不在 build/startup 自动改配置。冲突时整次拒绝，不覆盖其他键或 prefix。action invoke 是异步启动回执，先核对动作日志退出码 0 和 installed/already_installed 输出，再检查和重载配置。模型不得自动调用 continue 来代替用户确认，也不得通过伪造 action 环境或 context 绕过等待。
+用户默认从“总控任务面板”操作：Ctrl+B 松开后 Shift+O，或 status 动作。主列表每两秒只读刷新并保留选中任务，Enter 只看完整回报；菜单/详情/确认页冻结对象，r 返回主列表刷新。启动/定位/暂停响应明确菜单选择；更换和“当前结果已处理完”先预览目标/正文，再由用户按 y。查看、刷新、Enter、退出均不确认，也不调用 next。面板固定打开时底层窗格，定位后关闭再重开，不能从其他窗格自动 focus 后继续确认。面板操作通过原生 plugin.action.invoke，由 Herdr 注入动作身份，记录 panel 来源；correlation_id 关联显示的结果/目标身份，旧视图不能确认新队首。程序仍不能证明真人操作；模型不得替用户自动选择处理完成。
+
+用户可显式执行 install-shortcuts 安装推荐面板键；仅追加 prefix+shift+o，保留已有六个高级键；不在 build/startup 自动改配置。冲突时整次拒绝，不覆盖其他键或 prefix。action invoke 是异步启动回执，先核对动作日志退出码 0 和 installed/already_installed 输出，再检查和重载配置。模型不得自动调用 continue 来代替用户确认，也不得通过伪造 action 环境或 context 绕过等待。
 
 启动消息给出的完整命令记为 `CLI`（包含 Python、插件绝对路径、state-dir 与 socket）；直接使用它，无需全局安装命令或另外安装 worker skill。先读 `CLI --help`，再执行 `CLI ready` 确认启用。
 
@@ -34,7 +36,7 @@ start 首次绑定用户选中的原生 Agent；已有绑定时只启动或恢�
 1. 被唤醒后只执行一次 `CLI next`，取得或恢复当前唯一队首。完整读取持久化正文，按需核对证据和实际验证层级；代理 idle/done 不等于业务完成。`pending` 会变为 `handling`，重入保留已有状态。
 2. 对 `handling` 队首，把准备向用户展示的本条结果写入绝对路径 UTF-8 文件，执行 `CLI present --event <序号> --summary-file <文件>`，向用户展示同一份内容，然后结束本回合。必须完成 present 的持久记录；不批量调用 next。
 3. `awaiting_user` 表示已登记展示并等待用户。重入时检查现有 summary、user_reply、user_acked_at、user_ack_source、user_ack_context 和 followups，不自动重复展示。没有用户确认时不催用户，也不处理已到达的下一条。暂停或重启不会解除等待。
-4. 用户明确说「这条处理完了」「继续下一条」，或明确确认当前条并给出后续安排时，关联到当前 event ID。将**最新实际用户消息原文**写入绝对路径 UTF-8 文件，执行 `CLI ack --event <当前序号> --reply-file <文件>`，确认来源为 message。用户也可在已绑定且空闲的总控窗格显式触发 continue 插件动作，表示“当前这条已经处理完，继续下一条”；程序记录 plugin_action 来源和实际动作 context，user_reply/user_reply_file 留空。keybinding、CLI、API 等来源按真实元数据保存，不要求 HERDR_PLUGIN_EVENT=action。程序不能证明真人按键或消息真实性；不能编造答复或用模型总结替换原文。
+4. 用户明确说「这条处理完了」「继续下一条」，或明确确认当前条并给出后续安排时，关联到当前 event ID。将**最新实际用户消息原文**写入绝对路径 UTF-8 文件，执行 `CLI ack --event <当前序号> --reply-file <文件>`，确认来源为 message。用户也可在已绑定且空闲的总控窗格显式触发 continue 插件动作，表示“当前这条已经处理完，继续下一条”；程序记录 plugin_action 来源和实际动作 context，user_reply/user_reply_file 留空。panel、keybinding、CLI、API 等来源按真实元数据保存，不要求 HERDR_PLUGIN_EVENT=action。程序不能证明真人按键或消息真实性；不能编造答复或用模型总结替换原文。
 5. 普通新任务、无关消息、仅仅追问或补充信息都不是完成确认。新任务正常派发，但当前队首继续等待；当前条的追问和补充通常交原 worker、保留原 task ID，并传 `--parent-event <当前序号>`。只有用户明确表示本条已处理完或允许转到下一条才 ack；若同条消息同时确认并要求后续，先登记所需后续派发，再 ack。确认后该条不再接受新 parent-event 派发。
 6. ack 先持久保存用户原文和确认时点，再检查全部未撤销后续派发的 accept。若未接收，确认仍保留，不要求用户再说一遍；最后一份接收记录到达后自动出队，不等待 completed。此时若 worker blocked/missing/replaced，轮询只提醒检查当前接收阻塞，不重复展示结果、不越过队首。中断后恢复原派发，不重新提交。
 7. 用户确认且没有后续派发时立即出队。不要在 ack 后继续 next 或使用 while 循环清队列；下一条由后台轮询主动唤醒。相同原文对同一 event 的 ack 重试幂等，冲突原文会报错；不能把旧确认用于新 event。`finish` 已移除。

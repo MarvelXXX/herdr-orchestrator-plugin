@@ -43,6 +43,11 @@ class FakeHerdr:
     def caller(self):
         return self.agent(self.caller_name)
 
+    def call(self, *args):
+        if args == ("agent", "list"):
+            return {"agents": [item.copy() for item in self.agents.values()]}
+        raise HerdrError("unsupported test call")
+
     def plugin_enabled(self):
         return self.enabled
 

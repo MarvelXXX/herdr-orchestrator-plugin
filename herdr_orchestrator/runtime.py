@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -80,6 +81,23 @@ class Herdr:
             raise Conflict("this command requires the calling agent's HERDR_PANE_ID")
         return self.agent(pane)
 
+    def invoke_action(self, name, context):
+        request = {"id": "orchestrator-panel", "method": "plugin.action.invoke",
+                   "params": {"plugin_id": PLUGIN_ID, "action_id": name, "context": context}}
+        try:
+            with socket.socket(socket.AF_UNIX) as connection:
+                connection.settimeout(20)
+                connection.connect(self.socket)
+                connection.sendall((json.dumps(request) + "\n").encode())
+                with connection.makefile("r", encoding="utf-8") as response:
+                    result = json.loads(response.readline())
+        except (OSError, ValueError) as error:
+            raise HerdrError(str(error), "transport_uncertain") from error
+        if "error" in result:
+            detail = result["error"]
+            raise HerdrError(detail["message"], detail["code"])
+        return result["result"]
+
 
 def command_prefix(store, socket):
     return shlex.join([sys.executable, str(ENTRY), "--state-dir", str(store.directory),
@@ -132,16 +150,34 @@ def action_context(herdr, name):
 
 def perform_action(store, herdr, name):
     context = action_context(herdr, name)
+    panel = None
+    if context.get("invocation_source") == "panel":
+        correlation = context.get("correlation_id")
+        if not isinstance(correlation, str):
+            raise Conflict("面板请求缺少结果关联，请重新打开面板")
+        panel = json.loads(correlation)
+        if not isinstance(panel, dict) or panel.get("action") != name:
+            raise Conflict("面板请求已失效，请刷新后重新选择操作")
     # Capture the event before transport calls or lock waits; never acknowledge a later head.
     event = store.head(herdr.socket) if name == "continue" else None
-    if name == "continue" and (not event or event["state"] != "awaiting_user"
-                               or event["presented_at"] is None):
+    if name == "continue" and panel is not None:
+        head = event
+        expected = panel.get("event")
+        if type(expected) is not int or expected <= 0:
+            raise Conflict("面板没有可确认的结果，请刷新并查看当前结果")
+        event = store.one("SELECT * FROM events WHERE socket=? AND seq=?", (herdr.socket, expected))
+        if event and event["user_acked_at"] is None and (not head or head["seq"] != expected):
+            raise Conflict("当前结果已变化，请刷新；没有确认下一条")
+    if name == "continue" and (not event or event["presented_at"] is None
+                               or (event["state"] != "awaiting_user" and event["user_acked_at"] is None)):
         raise Conflict("there is no presented FIFO head to confirm")
     with control_lock(store):
         if name == "status":
             return herdr.call("plugin", "pane", "open", "--plugin", PLUGIN_ID,
                               "--entrypoint", "status")
         if name == "stop":
+            if panel is not None and store.session(herdr.socket)["identity"] != panel.get("identity"):
+                raise Conflict("总控已变化，请刷新后再操作")
             pause_daemon(store, herdr.socket)
             return {"paused": True, "workers_kept": True, "reports_kept": True}
         if name == "install-shortcuts":
@@ -154,6 +190,8 @@ def perform_action(store, herdr, name):
                 raise Conflict("select an agent pane before binding a coordinator")
             agent = herdr.agent(target)
             native = identity(agent)
+            if panel is not None and native != panel.get("identity"):
+                raise Conflict("选中的 Agent 身份已变化，请关闭面板后重新打开")
             bound_target = agent.get("name") or agent["pane_id"]
             if name == "switch" and agent["agent_status"] not in ("idle", "done"):
                 raise Conflict("the selected coordinator must be idle before switching")
@@ -180,6 +218,8 @@ def perform_action(store, herdr, name):
         coordinator = herdr.agent(session["coordinator"])
         if identity(coordinator) != session["identity"]:
             raise Conflict("coordinator identity changed; switch explicitly")
+        if panel is not None and session["identity"] != panel.get("identity"):
+            raise Conflict("总控已变化，请刷新后再操作")
         if name == "focus":
             return herdr.call("agent", "focus", coordinator["pane_id"])
         if name == "continue":

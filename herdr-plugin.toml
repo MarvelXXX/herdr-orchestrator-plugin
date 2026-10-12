@@ -1,6 +1,6 @@
 id = "herdr-orchestrator"
 name = "Orchestrator"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.9.3"
 description = "Persistent user-acknowledged FIFO, worker receipts and a polling coordinator wake-up."
 platforms = ["linux", "macos"]
@@ -13,49 +13,49 @@ command = ["python3", "orchestrator.py", "startup"]
 
 [[actions]]
 id = "start"
-title = "Orchestrator: start or resume the coordinator"
+title = "启动 / 恢复总控"
 contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "start"]
 
 [[actions]]
 id = "switch"
-title = "Orchestrator: switch coordinator to this agent"
+title = "更换总控为当前 Agent"
 contexts = ["pane"]
 command = ["python3", "orchestrator.py", "action", "switch"]
 
 [[actions]]
 id = "focus"
-title = "Orchestrator: focus the bound coordinator"
+title = "定位总控"
 contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "focus"]
 
 [[actions]]
 id = "continue"
-title = "Orchestrator: current report handled, continue to the next"
+title = "当前结果已处理完"
 contexts = ["pane"]
 command = ["python3", "orchestrator.py", "action", "continue"]
 
 [[actions]]
 id = "install-shortcuts"
-title = "Orchestrator: install recommended shortcuts"
+title = "安装推荐面板键"
 contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "install-shortcuts"]
 
 [[actions]]
 id = "stop"
-title = "Orchestrator: pause coordination"
+title = "暂停自动提醒"
 contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "stop"]
 
 [[actions]]
 id = "status"
-title = "Orchestrator: status and pending reports"
+title = "总控任务面板"
 contexts = ["global", "pane", "workspace"]
 command = ["python3", "orchestrator.py", "action", "status"]
 
 [[panes]]
 id = "status"
-title = "Orchestrator"
+title = "总控任务面板"
 placement = "popup"
 width = "85%"
 height = "80%"

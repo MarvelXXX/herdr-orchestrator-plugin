@@ -316,7 +316,7 @@ class ShortcutTests(unittest.TestCase):
         self.assertTrue(installed.startswith(original.encode()))
         parsed = tomllib.loads(installed.decode())
         self.assertEqual(parsed["keys"]["prefix"], "ctrl+a")
-        self.assertEqual(len(parsed["keys"]["command"]), 7)
+        self.assertEqual(len(parsed["keys"]["command"]), 2)
         self.assertEqual(Path(result["backup"]).read_text(), original)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(Path(result["backup"]).stat().st_mode & 0o777, 0o600)
@@ -325,7 +325,7 @@ class ShortcutTests(unittest.TestCase):
         self.assertEqual(Path(result["backup"]).read_text(), original)
 
     def test_custom_conflict_preserves_config_and_makes_no_partial_install(self):
-        original = '[[keys.command]]\nkey = "prefix+enter"\ntype = "shell"\ncommand = "true"\n'
+        original = '[[keys.command]]\nkey = "prefix+shift+o"\ntype = "shell"\ncommand = "true"\n'
         self.path.write_text(original)
         with self.assertRaises(Conflict):
             install_shortcuts(self.herdr)
@@ -340,7 +340,7 @@ class ShortcutTests(unittest.TestCase):
         self.assertEqual(Path(result["backup"]).stat().st_mode & 0o777, 0o600)
 
     def test_native_conflict_is_rejected_by_real_herdr_check(self):
-        original = '[keys]\nhelp = "prefix+i"\n'
+        original = '[keys]\nhelp = "prefix+shift+o"\n'
         self.path.write_text(original)
         with self.assertRaises(Conflict):
             install_shortcuts(self.herdr)
