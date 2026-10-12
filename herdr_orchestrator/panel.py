@@ -190,6 +190,9 @@ class Panel:
                                  if task["id"] == self.data["head"]["dispatch_id"])
         self.confirm = None
         self.pending = None
+        self.hitboxes = []
+        self.frame = None
+        self.mouse_down = None
         self.refresh()
 
     def refresh(self):
@@ -241,6 +244,7 @@ class Panel:
                           "当前状态：" + task_state(task, self.data["events"])])
         self.confirm = (name, expected, lines)
         self.view, self.offset = "confirm", 0
+        self.message = "请核对上方目标；取消不会修改任务，确认才执行。"
 
     def submit(self):
         if (self.herdr.env.get("HERDR_PLUGIN_ID") != PLUGIN_ID
@@ -278,7 +282,14 @@ class Panel:
         return False
 
     def key(self, key):
-        if key in (ord("q"), 27):
+        if key == curses.KEY_MOUSE:
+            _, x, y, _, buttons = curses.getmouse()
+            return self.mouse(x, y, buttons)
+        if key == curses.KEY_RESIZE:
+            self.hitboxes = []
+            self.frame = None
+            self.mouse_down = None
+        elif key in (ord("q"), 27):
             if self.view == "home":
                 return True
             self.view, self.offset = "home", 0
@@ -315,15 +326,61 @@ class Panel:
                 self.offset = max(0, self.offset + direction * (8 if key in (curses.KEY_PPAGE, curses.KEY_NPAGE) else 1))
         return False
 
+    def mouse(self, x, y, buttons):
+        if not self.frame or self.frame[0] != self.view:
+            self.mouse_down = None
+            return False
+        _, height, width = self.frame
+        if not (0 <= x < width and 0 <= y < height):
+            self.mouse_down = None
+            return False
+        if buttons & getattr(curses, "REPORT_MOUSE_POSITION", 0):
+            self.mouse_down = None
+            return False
+        if buttons & (curses.BUTTON4_PRESSED | getattr(curses, "BUTTON5_PRESSED", 0)):
+            self.mouse_down = None
+            key = curses.KEY_UP if buttons & curses.BUTTON4_PRESSED else curses.KEY_DOWN
+            for _ in range(3):
+                self.key(key)
+            return False
+        target = next((target for row, left, right, target in self.hitboxes
+                       if row == y and left <= x < right), None)
+        if buttons & curses.BUTTON1_PRESSED:
+            self.mouse_down = (self.frame, target, x, y)
+            return False
+        if buttons & curses.BUTTON1_RELEASED:
+            pressed = self.mouse_down
+            self.mouse_down = None
+            if pressed != (self.frame, target, x, y):
+                return False
+        elif not buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED):
+            return False
+        self.mouse_down = None
+        if target is None:
+            return False
+        kind, value = target
+        if kind == "task":
+            selected = next((i for i, task in enumerate(self.data["tasks"]) if task["id"] == value), None)
+            if selected is None:
+                raise Conflict("任务列表已变化，请刷新后重新选择")
+            self.selected = selected
+            if buttons & curses.BUTTON1_DOUBLE_CLICKED:
+                self.key(10)
+            return False
+        if buttons & curses.BUTTON1_DOUBLE_CLICKED:
+            # Do not activate a button on the page opened by the first click.
+            return False
+        return self.key(value)
+
     def lines(self):
         if self.view == "menu":
             candidate = agent_label(self.candidate) if self.candidate else "没有可用的 Agent"
             coordinator = self.data.get("coordinator_label") or (self.data["session"] or {}).get("coordinator") or candidate
             selected = goal(self.data["tasks"][self.selected]) if self.data["tasks"] else "没有可归档的任务"
-            return ["操作菜单（数字选择；更换 / 确认 / 归档先预览）", "此页对象已固定；r 返回主列表刷新，Esc 返回。", "", "1 启动 / 恢复：" + coordinator,
+            return ["1 启动 / 恢复：" + coordinator,
                     "  已有绑定只恢复原总控", "2 定位总控：" + coordinator, "  关闭面板后在总控处重新打开", "3 更换总控为打开面板的 Agent：" + candidate,
                     "  新旧总控均须空闲，任务与等待状态保留", "4 暂停自动提醒：Agent 工作继续，不丢回报",
-                    "5 当前结果已处理完：仅确认面板显示的这一条",
+                    "5 当前结果已处理完：" + ("仅确认面板显示的这一条" if self.data["head"] and self.data["head"]["state"] == "awaiting_user" else "暂无已展示的结果"),
                     "6 归档所选任务：" + selected, "  停止此任务的回报提醒，保留历史；Agent 工作继续"]
         if self.view == "confirm":
             return self.confirm[2] + ["", "按 y 明确执行；Esc / q 返回。Enter 不执行。"]
@@ -338,12 +395,42 @@ class Panel:
                           f"  {task_state(task, self.data['events'])} | {task_label(task, self.data)} | {timestamp(task['created_at'])}"])
         return lines
 
+    def toolbar(self, width):
+        if self.view == "home":
+            buttons = [("详情 Enter", 10), ("操作 m", ord("m")),
+                       ("待处理 h" if self.show_history else "历史 h", ord("h")),
+                       ("刷新 r", ord("r")), ("退出 q", ord("q"))]
+        elif self.view == "confirm":
+            label = {"archive": "确认归档", "continue": "确认处理完", "switch": "确认切换"}[self.confirm[0]]
+            buttons = [(label + " y", ord("y")), ("取消 Esc", 27), ("刷新 r", ord("r"))]
+        else:
+            buttons = [("返回 q", ord("q")), ("刷新 r", ord("r"))]
+        row, x = 0, 0
+        result = []
+        for label, key in buttons:
+            text = clip("[ " + label + " ]", width - 1)
+            if x and x + cells(text) >= width:
+                row, x = row + 1, 0
+            result.append((row, x, text, key))
+            x += cells(text) + 1
+        return result
+
     def draw(self, screen):
         height, width = screen.getmaxyx()
+        frame = (self.view, height, width)
+        if self.frame != frame:
+            self.mouse_down = None
+        self.frame = frame
+        self.hitboxes = []
         screen.erase()
-        if height < 6 or width < 12:
+        toolbar = self.toolbar(width) if width > 1 else []
+        footer_rows = toolbar[-1][0] + 3 if toolbar else 3
+        if height < footer_rows + 2 or width < 12:
             if width > 1 and height > 1:
                 screen.addstr(0, 0, clip("请放大窗口", width - 1))
+                text = clip("[ 返回 q ]" if self.view != "home" else "[ 退出 q ]", width - 1)
+                screen.addstr(height - 1, 0, text, curses.A_REVERSE)
+                self.hitboxes.append((height - 1, 0, cells(text), ("key", ord("q"))))
             screen.refresh()
             return
         header = [f"总控任务面板 · {VERSION}"]
@@ -356,12 +443,36 @@ class Panel:
             if not self.show_history and self.data["history_count"]:
                 count += f"，历史 {self.data['history_count']} 项"
             header.append(f"── {label}（{count}） " + "─" * width)
-        header = header[:max(1, height - 5)]
+        else:
+            header.append({"menu": "操作菜单 · 单击选择；目标已固定，r 刷新",
+                           "detail": "任务详情 · 查看不会确认或归档",
+                           "confirm": "操作预览 · 核对目标后明确执行"}[self.view])
+            header.append("─" * width)
+        header = header[:max(1, height - footer_rows - 1)]
         body = []
+        menu_key = None
         for line in self.lines():
-            # Task rows remain compact; detail and confirmation views contain the full text.
-            body.extend([clip(line, max(1, width - 1))] if self.view == "home" else wrap(line, width - 1))
-        available = max(1, height - len(header) - 3)
+            target = None
+            attribute = 0
+            if self.view == "home" and self.data["tasks"]:
+                index = len(body) // 2
+                target = ("task", self.data["tasks"][index]["id"])
+                if index == self.selected:
+                    attribute = curses.A_REVERSE
+            elif self.view == "menu":
+                if len(line) > 1 and line[0] in "123456" and line[1] == " ":
+                    menu_key = ord(line[0])
+                    line = "[" + line[0] + "] " + line[2:]
+                    attribute = curses.A_BOLD
+                disabled = (menu_key == ord("6") and not self.data["tasks"]) or (
+                    menu_key == ord("5") and (not self.data["head"] or self.data["head"]["state"] != "awaiting_user"))
+                if disabled:
+                    attribute = curses.A_DIM
+                elif menu_key and line.strip():
+                    target = ("key", menu_key)
+            wrapped = [clip(line, width - 1)] if self.view == "home" else wrap(line, width - 1)
+            body.extend((text, target, attribute) for text in wrapped)
+        available = max(1, height - len(header) - footer_rows)
         if self.view == "home" and self.data["tasks"]:
             selected_line = self.selected * 2
             if selected_line < self.offset:
@@ -369,40 +480,58 @@ class Panel:
             elif selected_line + 1 >= self.offset + available:
                 self.offset = selected_line + 2 - available
         self.offset = min(self.offset, max(0, len(body) - available))
-        rows = header + body[self.offset:self.offset + available]
-        for number, line in enumerate(rows):
-            if number < height - 3:
-                attribute = (curses.A_REVERSE if line.startswith("> ") else curses.A_BOLD
-                             if number == 0 or line.startswith(("当前结果", "等待", "任务列表")) else 0)
-                screen.addstr(number, 0, clip(line, max(1, width - 1)), attribute)
-        footer = {"home": "q退出 Enter详情 m操作 h" + ("待处理" if self.show_history else "历史") + " r刷新", "detail": "q/Esc返回 r刷新 ↑↓/PgUpDn滚动",
-                  "menu": "q/Esc返回 数字选择 r刷新", "confirm": "q/Esc取消 y执行 r刷新"}[self.view]
-        if height >= 3 and width >= 2:
-            screen.addstr(height - 3, 0, clip(self.message, width - 1), curses.A_BOLD)
-            screen.addstr(height - 2, 0, clip(footer, width - 1), curses.A_REVERSE)
-            screen.addstr(height - 1, 0, clip(f"↑↓滚动 · {self.offset + 1}/{max(1, len(body))} 行 · 查看不确认", width - 1))
+        for number, line in enumerate(header):
+            screen.addstr(number, 0, clip(line, width - 1), curses.A_BOLD)
+        for number, (line, target, attribute) in enumerate(body[self.offset:self.offset + available], len(header)):
+            if target and target[0] == "task" and attribute == curses.A_REVERSE:
+                line = clip(line + " " * width, width - 1)
+            screen.addstr(number, 0, clip(line, width - 1), attribute)
+            if target and line.strip():
+                self.hitboxes.append((number, 0, width - 1 if target[0] == "task" else cells(line), target))
+        footer = height - footer_rows
+        screen.addstr(footer, 0, clip(self.message, width - 1), curses.A_BOLD)
+        for row, x, text, key in toolbar:
+            disabled = self.view == "home" and key == 10 and not self.data["tasks"]
+            screen.addstr(footer + 1 + row, x, text, curses.A_DIM if disabled else curses.A_REVERSE)
+            if not disabled:
+                self.hitboxes.append((footer + 1 + row, x, x + cells(text), ("key", key)))
+        hint = {"home": "单击选择 · 双击全文 · 滚轮滚动",
+                "confirm": "预览不执行 · 确认才执行 · 滚轮 / ↑↓"}.get(self.view, "滚轮 / ↑↓ 滚动 · 查看不执行")
+        screen.addstr(height - 1, 0, clip(f"{hint} · {self.offset + 1}/{max(1, len(body))}", width - 1))
         screen.refresh()
 
     def run(self, screen):
         screen.keypad(True)
         screen.timeout(200)
+        old_mask = None
+        try:
+            available, old_mask = curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mouseinterval(150)
+            if not available:
+                self.message = "终端未启用鼠标；键盘操作仍可用。"
+        except curses.error:
+            self.message = "终端未启用鼠标；键盘操作仍可用。"
         next_check = 0
         next_refresh = time.monotonic() + 2
-        while True:
-            self.draw(screen)
-            key = screen.getch()
-            try:
-                if self.key(key):
-                    return
-                if self.view == "home" and time.monotonic() >= next_refresh:
-                    self.refresh()
-                    next_refresh = time.monotonic() + 2
-                if self.pending and time.monotonic() >= next_check:
-                    next_check = time.monotonic() + 1
-                    if self.check_action():
+        try:
+            while True:
+                self.draw(screen)
+                key = screen.getch()
+                try:
+                    if self.key(key):
                         return
-            except (HerdrError, Conflict, OSError, ValueError) as error:
-                self.message = readable_error(str(error))
+                    if self.view == "home" and time.monotonic() >= next_refresh:
+                        self.refresh()
+                        next_refresh = time.monotonic() + 2
+                    if self.pending and time.monotonic() >= next_check:
+                        next_check = time.monotonic() + 1
+                        if self.check_action():
+                            return
+                except (HerdrError, Conflict, OSError, ValueError, curses.error) as error:
+                    self.message = readable_error(str(error))
+        finally:
+            if old_mask is not None:
+                curses.mousemask(old_mask)
 
 
 def board(store, herdr):

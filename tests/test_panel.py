@@ -1,3 +1,4 @@
+import curses
 import io
 import json
 import os
@@ -57,6 +58,161 @@ class PanelTests(unittest.TestCase):
     def tearDown(self):
         self.store.close()
         self.temp.cleanup()
+
+    def click(self, panel, target, buttons=curses.BUTTON1_CLICKED):
+        panel.draw(Screen(30, 100))
+        row, left, right, _ = next(hit for hit in panel.hitboxes if hit[3] == target)
+        return panel.mouse((left + right) // 2, row, buttons)
+
+    def test_mouse_select_double_click_detail_and_toolbar_are_read_only(self):
+        first = self.present(self.report())
+        other = self.report(self.dispatch("other"), "second")
+        before = self.store.status(fixtures.SOCKET)
+        panel = Panel(self.store, self.herdr)
+        self.click(panel, ("task", other["dispatch_id"]))
+        self.assertEqual(panel.data["tasks"][panel.selected]["id"], other["dispatch_id"])
+        self.assertEqual(panel.view, "home")
+        self.click(panel, ("task", other["dispatch_id"]), curses.BUTTON1_DOUBLE_CLICKED)
+        self.assertEqual(panel.view, "detail")
+        self.click(panel, ("key", ord("q")))
+        self.click(panel, ("key", ord("h")))
+        self.assertTrue(panel.show_history)
+        self.click(panel, ("key", ord("r")))
+        self.assertTrue(self.click(panel, ("key", ord("q"))))
+        self.assertEqual(self.store.status(fixtures.SOCKET), before)
+        self.assertEqual(self.store.head(fixtures.SOCKET), first)
+        self.herdr.invoke_action.assert_not_called()
+
+    def test_mouse_menu_click_submits_simple_action_once(self):
+        for key, name in (("1", "start"), ("2", "focus"), ("4", "stop")):
+            with self.subTest(name=name):
+                panel = Panel(self.store, self.herdr)
+                self.herdr.invoke_action.reset_mock()
+                self.click(panel, ("key", ord("m")))
+                panel.draw(Screen(30, 100))
+                row, left, right, _ = next(hit for hit in panel.hitboxes if hit[3] == ("key", ord(key)))
+                panel.mouse(left, row, curses.BUTTON1_CLICKED)
+                panel.mouse(left, row, curses.BUTTON1_DOUBLE_CLICKED)
+                self.assertEqual(self.herdr.invoke_action.call_count, 1)
+                self.assertEqual(self.herdr.invoke_action.call_args.args[0], name)
+
+    def test_mouse_confirmation_keeps_original_head_after_next_is_presented(self):
+        first = self.present(self.report())
+        second = self.report(self.dispatch("other"), "second")
+        panel = Panel(self.store, self.herdr)
+        self.click(panel, ("key", ord("m")))
+        self.click(panel, ("key", ord("5")))
+        self.assertEqual(panel.view, "confirm")
+        self.herdr.invoke_action.assert_not_called()
+        self.store.ack(fixtures.SOCKET, first["seq"], "这条处理完了")
+        self.present(second)
+        self.click(panel, ("key", ord("y")))
+        name, context = self.herdr.invoke_action.call_args.args
+        self.assertEqual(json.loads(context["correlation_id"])["event"], first["seq"])
+        self.herdr.env = {"HERDR_PLUGIN_ID": PLUGIN_ID, "HERDR_PLUGIN_ACTION_ID": name,
+                          "HERDR_PLUGIN_CONTEXT_JSON": json.dumps(context)}
+        self.assertEqual(perform_action(self.store, self.herdr, name)["seq"], first["seq"])
+        self.assertIsNone(self.store.head(fixtures.SOCKET)["user_acked_at"])
+
+    def test_mouse_archive_preview_cancel_and_fixed_dispatch(self):
+        first = self.report()
+        panel = Panel(self.store, self.herdr)
+        self.click(panel, ("key", ord("m")))
+        self.click(panel, ("key", ord("6")))
+        self.assertEqual(panel.confirm[1]["dispatch"], first["dispatch_id"])
+        self.click(panel, ("key", 27))
+        self.herdr.invoke_action.assert_not_called()
+        self.click(panel, ("key", ord("m")))
+        self.click(panel, ("key", ord("6")))
+        other = self.dispatch("other")
+        archived = self.store.archive(fixtures.SOCKET, first["dispatch_id"])
+        self.click(panel, ("key", ord("y")))
+        name, context = self.herdr.invoke_action.call_args.args
+        self.assertEqual(json.loads(context["correlation_id"])["dispatch"], first["dispatch_id"])
+        self.herdr.env = {"HERDR_PLUGIN_ID": PLUGIN_ID, "HERDR_PLUGIN_ACTION_ID": name,
+                          "HERDR_PLUGIN_CONTEXT_JSON": json.dumps(context)}
+        self.assertEqual(perform_action(self.store, self.herdr, name), archived)
+        self.assertIsNone(self.store.dispatch(other["id"])["archived_at"])
+
+    def test_mouse_press_drag_release_and_empty_space_do_not_execute(self):
+        self.present(self.report())
+        panel = Panel(self.store, self.herdr)
+        panel.prepare("continue")
+        panel.draw(Screen(30, 100))
+        row, left, right, _ = next(hit for hit in panel.hitboxes if hit[3] == ("key", ord("y")))
+        panel.mouse(left, row, curses.BUTTON1_RELEASED)
+        panel.mouse(left, row, curses.BUTTON1_PRESSED)
+        panel.mouse(99, 0, curses.BUTTON1_RELEASED)
+        panel.mouse(-1, -1, curses.BUTTON1_CLICKED)
+        panel.mouse(99, 0, curses.BUTTON1_CLICKED)
+        self.herdr.invoke_action.assert_not_called()
+        self.assertIsNone(self.store.head(fixtures.SOCKET)["user_acked_at"])
+        panel.mouse(left, row, curses.BUTTON1_PRESSED)
+        panel.mouse(right - 1, row, curses.BUTTON1_RELEASED)
+        self.herdr.invoke_action.assert_not_called()
+        panel.mouse(left, row, curses.BUTTON1_PRESSED)
+        panel.mouse(left, row, curses.BUTTON1_PRESSED | curses.REPORT_MOUSE_POSITION)
+        panel.mouse(left, row, curses.BUTTON1_RELEASED)
+        self.herdr.invoke_action.assert_not_called()
+        panel.mouse(left, row, curses.BUTTON1_PRESSED)
+        panel.mouse(left, row, curses.BUTTON1_RELEASED)
+        self.assertEqual(self.herdr.invoke_action.call_count, 1)
+
+    def test_mouse_stale_task_hit_does_not_select_replacement_row(self):
+        first = self.report()
+        panel = Panel(self.store, self.herdr)
+        panel.draw(Screen(30, 100))
+        row, left, _, _ = next(hit for hit in panel.hitboxes if hit[3] == ("task", first["dispatch_id"]))
+        self.store.archive(fixtures.SOCKET, first["dispatch_id"])
+        other = self.dispatch("other")
+        panel.refresh()
+        with self.assertRaises(Conflict):
+            panel.mouse(left, row, curses.BUTTON1_CLICKED)
+        self.assertEqual(panel.data["tasks"][panel.selected]["id"], other["id"])
+        self.herdr.invoke_action.assert_not_called()
+
+    def test_mouse_wheel_scroll_and_resize_clear_old_coordinates(self):
+        self.present(self.report())
+        panel = Panel(self.store, self.herdr)
+        panel.key(10)
+        panel.draw(Screen(10, 40))
+        panel.mouse(5, 5, curses.BUTTON5_PRESSED)
+        self.assertEqual(panel.offset, 3)
+        panel.mouse(5, 5, curses.BUTTON4_PRESSED)
+        self.assertEqual(panel.offset, 0)
+        panel.key(curses.KEY_RESIZE)
+        self.assertEqual(panel.hitboxes, [])
+        self.assertFalse(panel.mouse(0, 0, curses.BUTTON1_CLICKED))
+        panel.draw(Screen(16, 32))
+        for row, left, right, _ in panel.hitboxes:
+            self.assertTrue(0 <= row < 16 and 0 <= left < right < 32)
+        self.herdr.invoke_action.assert_not_called()
+
+    def test_mouse_mask_is_restored_and_keyboard_works_if_unavailable(self):
+        panel = Panel(self.store, self.herdr)
+        screen = Screen(24, 80)
+        screen.keypad = Mock()
+        screen.timeout = Mock()
+        screen.getch = Mock(return_value=ord("q"))
+        with patch("curses.mousemask", return_value=(0, 7)) as mask, patch("curses.mouseinterval"):
+            panel.run(screen)
+        self.assertEqual(mask.call_args_list[-1].args, (7,))
+        with patch("curses.mousemask", side_effect=curses.error("unavailable")):
+            panel.run(screen)
+        self.herdr.invoke_action.assert_not_called()
+
+    def test_mouse_event_dispatch_and_disabled_empty_task_controls(self):
+        panel = Panel(self.store, self.herdr)
+        panel.draw(Screen(30, 100))
+        self.assertNotIn(("key", 10), [hit[3] for hit in panel.hitboxes])
+        row, left, _, _ = next(hit for hit in panel.hitboxes if hit[3] == ("key", ord("m")))
+        with patch("curses.getmouse", return_value=(0, left, row, 0, curses.BUTTON1_CLICKED)):
+            panel.key(curses.KEY_MOUSE)
+        self.assertEqual(panel.view, "menu")
+        panel.draw(Screen(30, 100))
+        self.assertNotIn(("key", ord("5")), [hit[3] for hit in panel.hitboxes])
+        self.assertNotIn(("key", ord("6")), [hit[3] for hit in panel.hitboxes])
+        self.herdr.invoke_action.assert_not_called()
 
     def test_open_refresh_detail_enter_and_exit_do_not_change_fifo(self):
         first = self.present(self.report())
