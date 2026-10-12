@@ -1,6 +1,6 @@
 id = "herdr-orchestrator"
 name = "Orchestrator"
-version = "0.6.1"
+version = "0.6.2"
 min_herdr_version = "0.9.3"
 description = "Persistent user-acknowledged FIFO, worker receipts and a polling coordinator wake-up."
 platforms = ["linux", "macos"]

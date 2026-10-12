@@ -10,7 +10,7 @@ from . import VERSION
 from .panel import board
 from .runtime import (Herdr, HerdrError, dispatch_task, identity, require_coordinator,
                       require_worker, run_daemon, spawn_daemon, task_spec, control_lock,
-                      pause_daemon, perform_action)
+                      pause_daemon, perform_action, coordinator_marker, refresh_coordinator_marker)
 from .store import Conflict, Store, new_id
 
 
@@ -97,12 +97,23 @@ def execute(args):
                     if store.session(args.socket)["enabled"]:
                         raise Conflict("pause coordination before rebinding")
                     pause_daemon(store, args.socket)
+                    previous = store.session(args.socket)
+                    try:
+                        old = herdr.agent(previous["coordinator"])
+                    except HerdrError as error:
+                        if error.code not in ("agent_not_found", "pane_not_found"):
+                            raise
+                    else:
+                        coordinator_marker(herdr, old, clear=True)
                 operation = store.rebind if args.rebind else store.bind
                 session = operation(args.socket, agent.get("name") or agent["pane_id"], native)
+                coordinator_marker(herdr, agent)
                 return {"session": session, "daemon": spawn_daemon(store, args.socket)}
         if command == "startup":
             with control_lock(store):
                 registered = store.one("SELECT * FROM sessions WHERE socket=?", (args.socket,))
+                if registered and not registered["enabled"]:
+                    refresh_coordinator_marker(store, herdr)
                 if registered and registered["enabled"]:
                     return spawn_daemon(store, args.socket)
                 return {"resumed": False}
@@ -112,6 +123,7 @@ def execute(args):
         if command == "stop":
             with control_lock(store):
                 pause_daemon(store, args.socket)
+                refresh_coordinator_marker(store, herdr)
             return {"paused": True, "workers_kept": True, "reports_kept": True}
         if command == "status":
             return store.status(args.socket)

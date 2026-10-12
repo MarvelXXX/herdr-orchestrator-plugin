@@ -34,6 +34,37 @@ def identity(agent):
                        "session": session["value"]}, sort_keys=True)
 
 
+def coordinator_marker(herdr, agent, clear=False, paused=False):
+    params = {"pane_id": agent["pane_id"], "source": PLUGIN_ID}
+    if clear:
+        params["clear_display_agent"] = True
+    else:
+        label = agent.get("name") or agent["agent"].capitalize()
+        role = "总控（已暂停）" if paused else "总控"
+        params.update(agent=agent["agent"], display_agent=role + " · " + label)
+        if not paused:
+            # Expiry removes a late old-poller write after a concurrent switch or daemon exit.
+            params["ttl_ms"] = POLL_SECONDS * 3 * 1000
+        source = (agent.get("agent_session") or {}).get("source")
+        if source:
+            params["applies_to_source"] = source
+    return herdr.request("pane.report_metadata", params)
+
+
+def refresh_coordinator_marker(store, herdr):
+    session = store.session(herdr.socket)
+    try:
+        agent = herdr.agent(session["coordinator"])
+    except HerdrError as error:
+        if error.code not in ("agent_not_found", "pane_not_found"):
+            raise
+        return
+    native = agent.get("agent_session") or {}
+    matches = bool(native.get("value")) and identity(agent) == session["identity"]
+    coordinator_marker(herdr, agent, clear=not matches,
+                       paused=not session["enabled"])
+
+
 class Herdr:
     def __init__(self, socket, env=None):
         self.env = dict(os.environ if env is None else env)
@@ -82,8 +113,11 @@ class Herdr:
         return self.agent(pane)
 
     def invoke_action(self, name, context):
-        request = {"id": "orchestrator-panel", "method": "plugin.action.invoke",
-                   "params": {"plugin_id": PLUGIN_ID, "action_id": name, "context": context}}
+        return self.request("plugin.action.invoke", {"plugin_id": PLUGIN_ID,
+                            "action_id": name, "context": context})
+
+    def request(self, method, params):
+        request = {"id": "orchestrator-panel", "method": method, "params": params}
         try:
             with socket.socket(socket.AF_UNIX) as connection:
                 connection.settimeout(20)
@@ -182,6 +216,7 @@ def perform_action(store, herdr, name):
             if panel is not None and store.session(herdr.socket)["identity"] != panel.get("identity"):
                 raise Conflict("总控已变化，请刷新后再操作")
             pause_daemon(store, herdr.socket)
+            refresh_coordinator_marker(store, herdr)
             return {"paused": True, "workers_kept": True, "reports_kept": True}
         if name == "install-shortcuts":
             from .shortcuts import install_shortcuts
@@ -218,9 +253,12 @@ def perform_action(store, herdr, name):
                 selected = herdr.agent(target)
                 if identity(selected) != native or selected["agent_status"] not in ("idle", "done"):
                     raise Conflict("selected coordinator changed while pausing; coordination remains paused")
+                if old:
+                    coordinator_marker(herdr, old, clear=True)
                 session = store.rebind(herdr.socket, bound_target, native)
             else:
                 session = store.bind(herdr.socket, bound_target, native)
+            coordinator_marker(herdr, agent)
             return {"session": session, "daemon": spawn_daemon(store, herdr.socket)}
         session = store.session(herdr.socket)
         coordinator = herdr.agent(session["coordinator"])
@@ -317,7 +355,9 @@ def poll_once(store, herdr, now=None):
     coordinator = herdr.agent(session["coordinator"])
     if identity(coordinator) != session["identity"]:
         store.update_session(herdr.socket, enabled=0, error="coordinator identity changed; rebind explicitly")
+        coordinator_marker(herdr, coordinator, clear=True)
         return "identity_changed"
+    coordinator_marker(herdr, coordinator)
     for dispatch in store.rows("""SELECT * FROM dispatches WHERE socket=?
             AND completed_at IS NULL AND abandoned_at IS NULL AND archived_at IS NULL""", (herdr.socket,)):
         try:

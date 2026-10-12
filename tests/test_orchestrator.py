@@ -32,6 +32,7 @@ class FakeHerdr:
         self.prompts = []
         self.enabled = True
         self.prompt_error = None
+        self.markers = {}
 
     def agent(self, target):
         record = self.agents.get(target) or next(
@@ -47,6 +48,15 @@ class FakeHerdr:
         if args == ("agent", "list"):
             return {"agents": [item.copy() for item in self.agents.values()]}
         raise HerdrError("unsupported test call")
+
+    def request(self, method, params):
+        if method == "pane.report_metadata":
+            if params.get("clear_display_agent"):
+                self.markers.pop(params["pane_id"], None)
+            else:
+                self.markers[params["pane_id"]] = params["display_agent"]
+            return {"ok": True}
+        raise HerdrError("unsupported test request")
 
     def plugin_enabled(self):
         return self.enabled
