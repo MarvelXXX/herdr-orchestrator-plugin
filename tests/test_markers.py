@@ -53,7 +53,6 @@ class MarkerTests(unittest.TestCase):
         self.assertEqual(params["pane_id"], agent["pane_id"])
         self.assertEqual(params["source"], PLUGIN_ID)
         self.assertEqual(params["agent"], "codex")
-        self.assertEqual(params["applies_to_source"], "herdr:codex")
         self.assertGreater(params["ttl_ms"], 5000)
         self.assertEqual(agent, original)
         self.assertEqual(self.herdr.prompts, [])
@@ -65,6 +64,23 @@ class MarkerTests(unittest.TestCase):
         self.assertEqual(poll_once(self.store, self.herdr), "awaiting_user")
         self.assertIn("w1:coordinator", self.herdr.markers)
         self.assertEqual(self.store.status(fixtures.SOCKET), before)
+        self.assertEqual(self.store.head(fixtures.SOCKET), event)
+        self.assertEqual(self.herdr.prompts, [])
+
+    def test_native_session_source_without_lifecycle_authority_still_renders_marker(self):
+        event = self.present(self.report())
+        self.herdr.agents["coordinator"]["agent_session"]["source"] = "herdr:codex"
+        request = self.herdr.request
+
+        def detect_only_metadata(method, params):
+            # Herdr accepts but hides presentation guarded by an absent lifecycle authority.
+            if params.get("applies_to_source") is not None:
+                return {"ok": True}
+            return request(method, params)
+
+        self.herdr.request = detect_only_metadata
+        self.assertEqual(poll_once(self.store, self.herdr), "awaiting_user")
+        self.assertIn("w1:coordinator", self.herdr.markers)
         self.assertEqual(self.store.head(fixtures.SOCKET), event)
         self.assertEqual(self.herdr.prompts, [])
 

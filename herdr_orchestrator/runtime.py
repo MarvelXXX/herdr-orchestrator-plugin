@@ -45,9 +45,6 @@ def coordinator_marker(herdr, agent, clear=False, paused=False):
         if not paused:
             # Expiry removes a late old-poller write after a concurrent switch or daemon exit.
             params["ttl_ms"] = POLL_SECONDS * 3 * 1000
-        source = (agent.get("agent_session") or {}).get("source")
-        if source:
-            params["applies_to_source"] = source
     return herdr.request("pane.report_metadata", params)
 
 
@@ -380,7 +377,7 @@ def poll_once(store, herdr, now=None):
     if not session["activated"]:
         wake_key = "activation"
         prefix = command_prefix(store, herdr.socket)
-        text = ("[Herdr Orchestrator] 用户已通过插件 start action 明确指定本会话为总控。\n"
+        text = ("[Herdr Orchestrator] 用户已通过插件明确指定本会话为总控。\n"
                 f"请读取 {ROOT / 'skills/herdr-orchestrator/SKILL.md'}，"
                 f"入口命令为 {prefix}。读取后执行 {prefix} ready。"
                 "只编排、派发、回读与汇总；保持已有任务与授权范围。")

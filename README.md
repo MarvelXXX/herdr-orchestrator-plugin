@@ -146,11 +146,11 @@ herdr --version
 herdr status server
 python3 --version
 git --version
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.4
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
-核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.3、`enabled` 为 true，来源与 ref 符合预期。
+核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.4、`enabled` 为 true，来源与 ref 符合预期。
 交互安装会展示信任预览；已授权的非交互安装可加 `--yes`。命令依据 [官方 CLI 文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
 Codex 用户先检查 integration，仅在缺失或过期时安装：
@@ -313,7 +313,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 ```text
 请安装并配置 Herdr Orchestrator：
 仓库：<owner>/herdr-orchestrator-plugin（从当前仓库地址填写）
-版本：v0.6.3
+版本：v0.6.4
 总控：<用户指定的现有代理名或窗格 ID>
 
 1. 确认 HERDR_ENV=1；检查 Herdr 客户端、当前运行服务的版本和兼容性、Python 3.11+、Git。
@@ -321,7 +321,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
    核对目标代理已发送第一条普通消息且有 agent_session.value，缺失就报告具体问题，不猜身份。
 2. 若已安装，先列出受影响的启用会话并暂停其编排，等待旧轮询进程退出，做 SQLite 一致备份。
    GitHub 安装版按新 ref 重新 install，无需先 uninstall；本地 link 先按官方流程处理，不删除源码或状态。
-3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3 --yes。
+3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.4 --yes。
    再读 herdr plugin list --plugin herdr-orchestrator --json，核对来源、ref、version、enabled，获取 plugin_root。
 4. 确定实际 state-dir 与当前服务 socket：优先使用实际插件上下文的 HERDR_PLUGIN_STATE_DIR。
    若按官方对应版本的目录规则定位，必须核对运行服务的 HOME/XDG_STATE_HOME 和 release/debug 类型。
@@ -349,7 +349,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 然后按新 ref 重新安装 GitHub 版，**无需先卸载**：
 
 ```sh
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3 --yes
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.4 --yes
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
@@ -362,7 +362,7 @@ v0.4 和更早版本的入口不能打开 schema v4。已有 worker 的任务和
 不要在 Agent 窗格盲按 Ctrl+C。回到主界面后 Ctrl+B 松开再 Shift+R 刷新，再 Ctrl+B 松开再 Shift+O 打开新面板。
 参见 [官方 CLI 的重装规则](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
-v0.5 和 v0.6 均使用 schema v4；v0.6.x 不新增数据库迁移；v0.6.1 增加首页定位与独立面板归档，v0.6.2 增加 Herdr Agents 总控显示标记；v0.6.3 修复换对话后的定位和候选身份刷新。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
+v0.5 和 v0.6 均使用 schema v4；v0.6.x 不新增数据库迁移；v0.6.1 增加首页定位与独立面板归档，v0.6.2 增加 Herdr Agents 总控显示标记；v0.6.3 修复换对话后的定位和候选身份刷新，v0.6.4 修复无 lifecycle hook 时的总控标记显示。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
 从 v0.1.0 或 v0.2.x 升级时，先沿用 schema v1/v2 至 v3 的迁移，保留展示与消息确认字段，新增确认来源和动作 context，再迁移至 v4。
 原任务、回报、摘要、序号和接收记录保留；pending/handling 不自动 done，旧 done 不伪造用户确认。
 只有既有确认时点和非空原话同时存在，迁移才标为 message；缺证据的历史确认来源保留为空，不补造动作或消息。
@@ -394,7 +394,7 @@ v0.3 与 v0.4 使用 schema v3，相互兼容；它们不支持本次的 schema 
 - 用户明确归档的任务单独退出提醒队列，保留原回报状态、正文和已有确认，不补造 done 或用户答复。归档后接收与回报仍保存到历史；归档不终止 Agent。
 - ack 保存 message 来源、实际用户原文和文件位置；continue 保存 plugin_action 来源、确认时点和实际 context，原文和文件位置为空。
 - action 校验插件 ID、动作 ID、Herdr context 和原生总控身份；不要求 HERDR_PLUGIN_EVENT=action。invocation_source 按实际 panel/keybinding/cli/api 等元数据记录，不声称能证明真人按键或消息真实性。
-- Agents 标记通过插件独立 source 的 `pane.report_metadata` 显示字段提供。运行中每次轮询刷新，15 秒未刷新自动过期，避免旧轮询迟到写入或异常退出后长期残留；暂停标记保留到恢复、切换或原生 Agent 退出。清除只影响插件自身显示层，其他来源的标题与标签保留。它不接管 lifecycle，也不更改任务队列或 SQLite schema。
+- Agents 标记通过插件独立 source 的 `pane.report_metadata` 显示字段提供。运行中每次轮询刷新，15 秒未刷新自动过期，避免旧轮询迟到写入或异常退出后长期残留；暂停标记保留到恢复、切换或原生 Agent 退出。清除只影响插件自身显示层，其他来源的标题与标签保留。它不接管 lifecycle，也不更改任务队列或 SQLite schema；原生会话来源与生命周期状态来源可以不同，标记不依赖 lifecycle hook 存在。
 - 面板通过原生 plugin.action.invoke 提供合法 context，由 Herdr 注入动作身份；correlation_id 关联显示的 event/任务/目标身份，runtime 校验旧视图边界；请求关联不增加数据库字段，也不伪造 ACTION_ID。见 [官方插件 API](https://herdr.dev/docs/socket-api/#plugin-apis)。
 - 同 event 同原文重试幂等，保留确认时点；冲突原文拒绝，旧确认不会确认新的队首。确认后封闭该条的后续派发。
 - 未归档任务的结果处理要求持久用户确认与所有未撤销、未归档后续派发 accept；代理 idle/done、超时、accept 和归档均不是业务完成。归档后续派发不确认父结果。
