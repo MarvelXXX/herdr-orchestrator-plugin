@@ -28,7 +28,7 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             raise Conflict(f"unsupported database version: {version}")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -87,6 +87,9 @@ class Store:
                     WHERE user_acked_at IS NOT NULL AND user_reply IS NOT NULL
                     AND length(user_reply)>0""")
                 self.db.execute("PRAGMA user_version=3")
+            if self.db.execute("PRAGMA user_version").fetchone()[0] < 4:
+                self.db.execute("ALTER TABLE dispatches ADD COLUMN archived_at REAL")
+                self.db.execute("PRAGMA user_version=4")
 
     def close(self):
         self.db.close()
@@ -149,8 +152,9 @@ class Store:
         return dispatch
 
     def head(self, socket):
-        return self.one("SELECT * FROM events WHERE socket=? AND state!='done' ORDER BY seq LIMIT 1",
-                        (socket,))
+        return self.one("""SELECT events.* FROM events JOIN dispatches ON dispatches.id=events.dispatch_id
+            WHERE events.socket=? AND events.state!='done' AND dispatches.archived_at IS NULL
+            ORDER BY events.seq LIMIT 1""", (socket,))
 
     def _require_head(self, socket, seq):
         event = self.head(socket)
@@ -169,7 +173,7 @@ class Store:
                 if event["user_acked_at"] is not None:
                     raise Conflict("user acknowledgment seals this head against new follow-up dispatches")
             live = self.one("""SELECT id FROM dispatches WHERE socket=? AND identity=?
-                AND completed_at IS NULL AND abandoned_at IS NULL LIMIT 1""", (socket, identity))
+                AND completed_at IS NULL AND abandoned_at IS NULL AND archived_at IS NULL LIMIT 1""", (socket, identity))
             if live:
                 raise Conflict(f"worker still has unsettled dispatch {live['id']}; inspect it first")
             self.db.execute("""INSERT INTO dispatches
@@ -247,7 +251,7 @@ class Store:
         if not event or event["state"] != "awaiting_user" or event["user_acked_at"] is None:
             return
         waiting = self.one("""SELECT id FROM dispatches WHERE socket=? AND parent_seq=?
-            AND abandoned_at IS NULL AND accepted_at IS NULL LIMIT 1""", (socket, event["seq"]))
+            AND abandoned_at IS NULL AND archived_at IS NULL AND accepted_at IS NULL LIMIT 1""", (socket, event["seq"]))
         if waiting:
             return
         self.db.execute("UPDATE events SET state='done',done_at=? WHERE seq=?",
@@ -293,9 +297,25 @@ class Store:
             self._complete_acknowledged_head(dispatch["socket"])
         return self.dispatch(dispatch_id)
 
+    def archive(self, socket, dispatch_id):
+        with self.transaction():
+            dispatch = self.dispatch(dispatch_id)
+            if dispatch["socket"] != socket:
+                raise Conflict("dispatch belongs to a different Herdr session")
+            if dispatch["archived_at"] is not None:
+                return dispatch
+            before = self.head(socket)
+            self.db.execute("UPDATE dispatches SET archived_at=? WHERE id=?", (time.time(), dispatch_id))
+            self._complete_acknowledged_head(socket)
+            after = self.head(socket)
+            if (before and before["seq"]) != (after and after["seq"]):
+                self.db.execute("UPDATE sessions SET wake_key=NULL,wake_at=NULL WHERE socket=?", (socket,))
+        return self.dispatch(dispatch_id)
+
     def status(self, socket):
         return {"session": self.session(socket), "head": self.head(socket),
                 "dispatches": self.rows("SELECT * FROM dispatches WHERE socket=? ORDER BY created_at",
                                         (socket,)),
-                "pending": self.rows("SELECT * FROM events WHERE socket=? AND state!='done' ORDER BY seq",
-                                     (socket,))}
+                "pending": self.rows("""SELECT events.* FROM events JOIN dispatches ON dispatches.id=events.dispatch_id
+                    WHERE events.socket=? AND events.state!='done' AND dispatches.archived_at IS NULL
+                    ORDER BY events.seq""", (socket,))}

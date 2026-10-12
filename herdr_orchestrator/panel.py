@@ -49,11 +49,18 @@ def timestamp(value):
     return datetime.fromtimestamp(value).strftime("%m-%d %H:%M") if value else "尚无记录"
 
 
-def snapshot(store, socket):
+def snapshot(store, socket, show_history=False):
     session = store.one("SELECT rowid AS id,* FROM sessions WHERE socket=?", (socket,))
-    return {"session": session, "head": store.head(socket),
-            "tasks": store.rows("SELECT * FROM dispatches WHERE socket=? ORDER BY created_at DESC", (socket,)),
-            "events": store.rows("SELECT * FROM events WHERE socket=? ORDER BY seq", (socket,))}
+    head = store.head(socket)
+    events = store.rows("SELECT * FROM events WHERE socket=? ORDER BY seq", (socket,))
+    tasks = store.rows("SELECT * FROM dispatches WHERE socket=? ORDER BY created_at DESC", (socket,))
+    unsettled = {event["dispatch_id"] for event in events if event["state"] != "done"}
+    active = [task for task in tasks if (head and task["id"] == head["dispatch_id"])
+              or (task["archived_at"] is None and (task["id"] in unsettled
+                  or (task["completed_at"] is None and task["abandoned_at"] is None)))]
+    return {"session": session, "head": head,
+            "tasks": tasks if show_history else active, "events": events,
+            "history_count": len(tasks) - len(active)}
 
 
 def goal(task):
@@ -72,6 +79,8 @@ def task_label(task, data):
 
 def task_state(task, events):
     reports = [item for item in events if item["dispatch_id"] == task["id"]]
+    if task["archived_at"] is not None:
+        return "已归档"
     if task["abandoned_at"]:
         return "已撤销"
     if reports:
@@ -119,6 +128,8 @@ def task_detail(task, data):
     spec = json.loads(task["spec"])
     lines = ["任务目标", spec["goal"], "", "执行 Agent：" + task_label(task, data),
              "状态：" + task_state(task, data["events"]), "派发时间：" + timestamp(task["created_at"])]
+    if task["archived_at"] is not None:
+        lines.append("归档时间：" + timestamp(task["archived_at"]))
     for key, label in (("scope", "范围"), ("authorization", "授权"), ("acceptance_criteria", "完成标准")):
         lines.extend(["", label, spec[key]])
     for event in data["events"]:
@@ -144,7 +155,8 @@ def task_detail(task, data):
 def readable_error(message):
     translations = {
         "continue must be invoked": "请在已绑定总控的窗格打开面板；定位后关闭并重新打开。",
-        "wait for the coordinator": "总控正在忙，请等它空闲后再确认。",
+        "archive must be invoked": "请在已绑定总控的窗格打开面板后归档任务。",
+        "wait for the coordinator": "总控正在忙，请等它空闲后再操作。",
         "current coordinator is busy": "原总控正在忙，不能中途更换。",
         "selected coordinator must be idle": "候选 Agent 尚未空闲，请稍后重开面板。",
         "no presented FIFO head": "没有已展示、等待用户处理的结果，不能跳过队列。",
@@ -160,6 +172,7 @@ class Panel:
         self.context = json.loads(herdr.env.get("HERDR_PLUGIN_CONTEXT_JSON", "{}"))
         if not isinstance(self.context, dict):
             raise Conflict("面板上下文无效，请通过 Herdr 重新打开")
+        self.show_history = False
         self.data = snapshot(store, herdr.socket)
         self.candidate = None
         self.message = "仅查看不会确认结果；按 m 打开操作菜单。"
@@ -181,8 +194,11 @@ class Panel:
 
     def refresh(self):
         selected = self.data["tasks"][self.selected]["id"] if self.data["tasks"] else None
-        self.data = snapshot(self.store, self.herdr.socket)
-        self.selected = next((i for i, item in enumerate(self.data["tasks"]) if item["id"] == selected), 0)
+        self.data = snapshot(self.store, self.herdr.socket, self.show_history)
+        fallback = self.data["head"]["dispatch_id"] if self.data["head"] else None
+        self.selected = next((i for i, item in enumerate(self.data["tasks"]) if item["id"] == selected), None)
+        if self.selected is None:
+            self.selected = next((i for i, item in enumerate(self.data["tasks"]) if item["id"] == fallback), 0)
         try:
             agents = self.herdr.call("agent", "list")["agents"]
             self.data["agent_labels"] = {key: agent_label(agent) for agent in agents
@@ -207,6 +223,7 @@ class Panel:
             "switch": f"更换总控为：{label}\n原总控和候选均须空闲；保留任务、回报和等待状态。",
             "stop": f"暂停自动提醒：{label}\n停止自动提醒，正在工作的 Agent 继续工作，结果仍可回报。",
             "continue": "当前结果已处理完\n只确认这一条已处理完；后续 Agent 接收齐全后再提醒下一条。",
+            "archive": "归档所选任务\n退出待处理列表和提醒队列，保留历史；Agent 工作继续。\n只归档所选任务，其他后续任务保留；归档不代表业务完成。",
         }
         lines = [descriptions[name]]
         if name == "continue":
@@ -215,6 +232,13 @@ class Panel:
             expected["event"] = head["seq"]
             task = next(item for item in self.data["tasks"] if item["id"] == head["dispatch_id"])
             lines.extend(["", "结果目标：" + goal(task), head["summary"]])
+        if name == "archive":
+            if not self.data["tasks"]:
+                raise Conflict("没有可归档的任务")
+            task = self.data["tasks"][self.selected]
+            expected["dispatch"] = task["id"]
+            lines.extend(["", "任务目标：" + goal(task), "执行 Agent：" + task_label(task, self.data),
+                          "当前状态：" + task_state(task, self.data["events"])])
         self.confirm = (name, expected, lines)
         self.view, self.offset = "confirm", 0
 
@@ -245,7 +269,7 @@ class Panel:
                 return False
             self.message = {"start": "已启动 / 恢复，等待总控准备就绪。", "switch": "已更换总控，等待总控准备就绪。",
                             "stop": "已暂停自动提醒，Agent 工作继续。", "continue": "这条已记为处理完成；接收齐全后再提醒下一条。",
-                            "focus": "已定位总控，请重新打开面板。"}[name]
+                            "focus": "已定位总控，请重新打开面板。", "archive": "任务已归档，历史保留；Agent 工作继续。"}[name]
             if self.view == "home":
                 self.refresh()
             return name == "focus"
@@ -264,10 +288,15 @@ class Panel:
             self.message = "已刷新，仅查看；没有确认结果。"
         elif key == ord("m") and self.view == "home":
             self.view, self.offset = "menu", 0
-        elif self.view == "menu" and key in map(ord, "12345"):
+        elif key == ord("h") and self.view == "home":
+            self.show_history = not self.show_history
+            self.refresh()
+            self.offset = 0
+            self.message = "显示全部历史；查看不会确认结果。" if self.show_history else "仅显示待处理任务；历史记录保留。"
+        elif self.view == "menu" and key in map(ord, "123456"):
             if self.pending:
                 raise Conflict("已有动作等待完成，请先查看日志")
-            name = ("start", "focus", "switch", "stop", "continue")[key - ord("1")]
+            name = ("start", "focus", "switch", "stop", "continue", "archive")[key - ord("1")]
             self.prepare(name)
             if name in ("start", "focus", "stop"):
                 self.submit()
@@ -290,17 +319,20 @@ class Panel:
         if self.view == "menu":
             candidate = agent_label(self.candidate) if self.candidate else "没有可用的 Agent"
             coordinator = self.data.get("coordinator_label") or (self.data["session"] or {}).get("coordinator") or candidate
-            return ["操作菜单（数字明确选择；更换 / 确认先预览）", "此页对象已固定；r 返回主列表刷新，Esc 返回。", "", "1 启动 / 恢复：" + coordinator,
+            selected = goal(self.data["tasks"][self.selected]) if self.data["tasks"] else "没有可归档的任务"
+            return ["操作菜单（数字选择；更换 / 确认 / 归档先预览）", "此页对象已固定；r 返回主列表刷新，Esc 返回。", "", "1 启动 / 恢复：" + coordinator,
                     "  已有绑定只恢复原总控", "2 定位总控：" + coordinator, "  关闭面板后在总控处重新打开", "3 更换总控为打开面板的 Agent：" + candidate,
                     "  新旧总控均须空闲，任务与等待状态保留", "4 暂停自动提醒：Agent 工作继续，不丢回报",
-                    "5 当前结果已处理完：仅确认面板显示的这一条"]
+                    "5 当前结果已处理完：仅确认面板显示的这一条",
+                    "6 归档所选任务：" + selected, "  停止此任务的回报提醒，保留历史；Agent 工作继续"]
         if self.view == "confirm":
             return self.confirm[2] + ["", "按 y 明确执行；Esc / q 返回。Enter 不执行。"]
         if self.view == "detail":
             return task_detail(self.data["tasks"][self.selected], self.data)
         lines = []
         if not self.data["tasks"]:
-            lines.append("暂无任务；向总控发送任务，由 worker 接收和回报。")
+            lines.append("暂无待处理任务；按 h 查看已处理记录。" if self.data["history_count"]
+                         else "暂无任务；向总控发送任务，由 worker 接收和回报。")
         for number, task in enumerate(self.data["tasks"]):
             lines.extend([("> " if number == self.selected else "  ") + goal(task).replace("\n", " "),
                           f"  {task_state(task, self.data['events'])} | {task_label(task, self.data)} | {timestamp(task['created_at'])}"])
@@ -319,7 +351,11 @@ class Panel:
             header += overview(self.data)
             if width < 48:
                 header = [line for line in header if not line.startswith("最近检查")]
-            header.append(f"── 任务列表（{len(self.data['tasks'])} 项） " + "─" * width)
+            label = "全部任务" if self.show_history else "待处理任务"
+            count = f"{len(self.data['tasks'])} 项"
+            if not self.show_history and self.data["history_count"]:
+                count += f"，历史 {self.data['history_count']} 项"
+            header.append(f"── {label}（{count}） " + "─" * width)
         header = header[:max(1, height - 5)]
         body = []
         for line in self.lines():
@@ -339,7 +375,7 @@ class Panel:
                 attribute = (curses.A_REVERSE if line.startswith("> ") else curses.A_BOLD
                              if number == 0 or line.startswith(("当前结果", "等待", "任务列表")) else 0)
                 screen.addstr(number, 0, clip(line, max(1, width - 1)), attribute)
-        footer = {"home": "q退出 Enter详情 m操作 r刷新", "detail": "q/Esc返回 r刷新 ↑↓/PgUpDn滚动",
+        footer = {"home": "q退出 Enter详情 m操作 h" + ("待处理" if self.show_history else "历史") + " r刷新", "detail": "q/Esc返回 r刷新 ↑↓/PgUpDn滚动",
                   "menu": "q/Esc返回 数字选择 r刷新", "confirm": "q/Esc取消 y执行 r刷新"}[self.view]
         if height >= 3 and width >= 2:
             screen.addstr(height - 3, 0, clip(self.message, width - 1), curses.A_BOLD)
@@ -374,9 +410,12 @@ def board(store, herdr):
         data = snapshot(store, herdr.socket)
         print(f"总控任务面板 · {VERSION}")
         print("\n".join(overview(data)))
+        print(f"待处理任务（{len(data['tasks'])} 项）；历史 {data['history_count']} 项。")
+        if not data["tasks"]:
+            print("暂无待处理任务。")
         for task in data["tasks"]:
             print(f"目标：{goal(task)}\nAgent：{task_label(task, data)} | {task_state(task, data['events'])} | {timestamp(task['created_at'])}")
-        print("静态只读视图；请在 Herdr 打开面板操作。")
+        print("静态只读视图；请在 Herdr 打开面板操作，按 h 查看全部历史。")
         return
     locale.setlocale(locale.LC_ALL, "")
     curses.wrapper(Panel(store, herdr).run)

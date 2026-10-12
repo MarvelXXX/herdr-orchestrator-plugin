@@ -31,7 +31,7 @@ def parser():
     bind.add_argument("--rebind", action="store_true", help="replace a paused coordinator binding")
     action = commands.add_parser("action", help="Herdr action entrypoint")
     action.add_argument("name", choices=("start", "switch", "focus", "continue", "stop", "status",
-                                       "install-shortcuts"))
+                                       "install-shortcuts", "archive"))
     commands.add_parser("ready", help="coordinator confirms reading the bundled skill")
     commands.add_parser("next", help="read or resume the current FIFO head")
     dispatch = commands.add_parser("dispatch", help="submit a task to an existing idle worker")
@@ -58,6 +58,8 @@ def parser():
     abandon = commands.add_parser("abandon", help="revoke an inspected attempt; does not stop its agent")
     abandon.add_argument("--dispatch", required=True)
     abandon.add_argument("--reason", required=True)
+    archive = commands.add_parser("archive", help="archive one dispatch, retaining reports and keeping its agent running")
+    archive.add_argument("--dispatch", required=True)
     return result
 
 
@@ -171,6 +173,8 @@ def execute(args):
             if dispatch["socket"] != args.socket:
                 raise Conflict("dispatch belongs to a different Herdr session")
             return store.abandon(args.dispatch, args.reason)
+        if command == "archive":
+            return store.archive(args.socket, args.dispatch)
         raise ValueError(f"unknown command: {command}")
     finally:
         store.close()

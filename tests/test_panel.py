@@ -130,6 +130,116 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(len(panel.data["tasks"]), 2)
         self.assertEqual(panel.data["tasks"][panel.selected]["id"], selected)
 
+    def test_completed_task_stays_visible_until_ack_and_all_followups_accept(self):
+        event = self.report()
+        dispatch_id = event["dispatch_id"]
+        self.assertEqual(snapshot(self.store, fixtures.SOCKET)["tasks"][0]["id"], dispatch_id)
+        self.store.next(fixtures.SOCKET)
+        self.assertEqual(snapshot(self.store, fixtures.SOCKET)["tasks"][0]["id"], dispatch_id)
+        self.present(event)
+        followup = self.dispatch(accepted=False, parent=event["seq"])
+        self.store.ack(fixtures.SOCKET, event["seq"], "这条处理完了")
+        waiting = snapshot(self.store, fixtures.SOCKET)
+        self.assertIn(dispatch_id, [task["id"] for task in waiting["tasks"]])
+        self.assertEqual(waiting["head"]["state"], "awaiting_user")
+        self.assertEqual(waiting["history_count"], 0)
+        self.store.accept(followup["id"])
+        active = snapshot(self.store, fixtures.SOCKET)
+        self.assertEqual([task["id"] for task in active["tasks"]], [followup["id"]])
+        self.assertEqual(active["history_count"], 1)
+        history = snapshot(self.store, fixtures.SOCKET, show_history=True)
+        completed = next(task for task in history["tasks"] if task["id"] == dispatch_id)
+        self.assertIn("evidence", task_detail(completed, history))
+        self.store.close()
+        self.store = Store(self.directory)
+        panel = Panel(self.store, self.herdr)
+        self.assertEqual([task["id"] for task in panel.data["tasks"]], [followup["id"]])
+        panel.key(ord("h"))
+        self.assertIn(dispatch_id, [task["id"] for task in panel.data["tasks"]])
+
+    def test_abandoned_task_is_hidden_only_after_its_reports_are_processed(self):
+        abandoned = self.dispatch()
+        self.store.abandon(abandoned["id"], "取消未回报任务")
+        self.assertEqual(snapshot(self.store, fixtures.SOCKET)["tasks"], [])
+        report = self.report(self.dispatch("other"))
+        self.store.abandon(report["dispatch_id"], "停止后续回报")
+        self.assertEqual(snapshot(self.store, fixtures.SOCKET)["tasks"][0]["id"], report["dispatch_id"])
+        self.present(report)
+        self.store.ack(fixtures.SOCKET, report["seq"], "这条处理完了")
+        blocked = self.dispatch()
+        event = self.store.report(blocked["id"], "blocked", "blocked", {"result": "等待输入"})
+        self.present(event)
+        self.store.ack(fixtures.SOCKET, event["seq"], "这条处理完了")
+        data = snapshot(self.store, fixtures.SOCKET)
+        self.assertEqual([task["id"] for task in data["tasks"]], [blocked["id"]])
+        self.assertEqual(data["history_count"], 2)
+        self.assertIsNone(data["head"])
+
+    def test_snapshot_keeps_captured_head_visible_if_ack_arrives_during_read(self):
+        event = self.present(self.report())
+        rows = self.store.rows
+
+        def acknowledge_during_read(sql, args=()):
+            if sql.startswith("SELECT * FROM events"):
+                self.store.ack(fixtures.SOCKET, event["seq"], "这条处理完了")
+            return rows(sql, args)
+
+        with patch.object(self.store, "rows", side_effect=acknowledge_during_read):
+            data = snapshot(self.store, fixtures.SOCKET)
+        self.assertEqual(data["head"]["seq"], event["seq"])
+        self.assertEqual(data["tasks"][0]["id"], event["dispatch_id"])
+        self.assertEqual(snapshot(self.store, fixtures.SOCKET)["tasks"], [])
+
+    def test_history_toggle_preserves_selection_and_frozen_views_without_actions(self):
+        done = self.present(self.report())
+        self.store.ack(fixtures.SOCKET, done["seq"], "这条处理完了")
+        live = self.dispatch("other")
+        before = self.store.status(fixtures.SOCKET)
+        panel = Panel(self.store, self.herdr)
+        panel.key(ord("h"))
+        self.assertEqual(panel.data["tasks"][panel.selected]["id"], live["id"])
+        panel.key(ord("j"))
+        self.assertEqual(panel.data["tasks"][panel.selected]["id"], done["dispatch_id"])
+        panel.key(10)
+        detail = panel.lines()
+        panel.key(ord("h"))
+        self.assertEqual(panel.lines(), detail)
+        panel.key(ord("q"))
+        panel.key(ord("h"))
+        self.assertFalse(panel.show_history)
+        self.assertEqual(panel.data["tasks"][panel.selected]["id"], live["id"])
+        panel.key(ord("m"))
+        panel.key(ord("h"))
+        self.assertEqual(panel.view, "menu")
+        self.assertFalse(panel.show_history)
+        self.assertEqual(self.store.status(fixtures.SOCKET), before)
+        self.herdr.invoke_action.assert_not_called()
+
+    def test_empty_active_list_and_static_cli_preserve_completed_history(self):
+        done = self.present(self.report())
+        self.store.ack(fixtures.SOCKET, done["seq"], "这条处理完了")
+        before = self.store.status(fixtures.SOCKET)
+        panel = Panel(self.store, self.herdr)
+        self.assertEqual(panel.data["tasks"], [])
+        self.assertTrue(panel.lines())
+        panel.key(10)
+        self.assertEqual(panel.view, "home")
+        screen = Screen(24, 80)
+        panel.draw(screen)
+        command = [sys.executable, str(fixtures.ENTRY), "--state-dir", str(self.directory),
+                   "--socket", fixtures.SOCKET, "board"]
+        result = subprocess.run(command, env=dict(os.environ, HERDR_ENV="1"),
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("总控任务面板"), 1)
+        self.assertNotIn("目标：test", result.stdout)
+        self.assertNotIn(done["dispatch_id"], result.stdout)
+        self.assertEqual(self.store.status(fixtures.SOCKET), before)
+        panel.key(ord("h"))
+        panel.key(10)
+        self.assertIn("evidence", panel.lines())
+        self.herdr.invoke_action.assert_not_called()
+
     def test_periodic_main_refresh_does_not_refresh_frozen_detail(self):
         self.report()
         panel = Panel(self.store, self.herdr)

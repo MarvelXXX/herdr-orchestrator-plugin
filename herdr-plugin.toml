@@ -1,6 +1,6 @@
 id = "herdr-orchestrator"
 name = "Orchestrator"
-version = "0.4.0"
+version = "0.5.0"
 min_herdr_version = "0.9.3"
 description = "Persistent user-acknowledged FIFO, worker receipts and a polling coordinator wake-up."
 platforms = ["linux", "macos"]
@@ -34,6 +34,12 @@ id = "continue"
 title = "当前结果已处理完"
 contexts = ["pane"]
 command = ["python3", "orchestrator.py", "action", "continue"]
+
+[[actions]]
+id = "archive"
+title = "归档面板所选任务"
+contexts = ["pane"]
+command = ["python3", "orchestrator.py", "action", "archive"]
 
 [[actions]]
 id = "install-shortcuts"

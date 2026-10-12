@@ -579,7 +579,7 @@ class MigrationTests(unittest.TestCase):
                       for table in ("sessions", "dispatches", "events")}
             db.close()
             store = Store(directory)
-            self.assertEqual(store.db.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(store.db.execute("PRAGMA user_version").fetchone()[0], 4)
             for table, original_rows in before.items():
                 after = store.rows(f"SELECT * FROM {table}")
                 self.assertEqual([{key: row[key] for key in original_rows[0]} for row in after], original_rows)

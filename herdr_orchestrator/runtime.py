@@ -171,6 +171,9 @@ def perform_action(store, herdr, name):
     if name == "continue" and (not event or event["presented_at"] is None
                                or (event["state"] != "awaiting_user" and event["user_acked_at"] is None)):
         raise Conflict("there is no presented FIFO head to confirm")
+    if name == "archive" and (panel is None or not isinstance(panel.get("dispatch"), str)
+                              or not panel["dispatch"]):
+        raise Conflict("请在面板中选择要归档的任务，再预览并执行")
     with control_lock(store):
         if name == "status":
             return herdr.call("plugin", "pane", "open", "--plugin", PLUGIN_ID,
@@ -222,11 +225,13 @@ def perform_action(store, herdr, name):
             raise Conflict("总控已变化，请刷新后再操作")
         if name == "focus":
             return herdr.call("agent", "focus", coordinator["pane_id"])
-        if name == "continue":
+        if name in ("continue", "archive"):
             if context.get("focused_pane_id") != coordinator["pane_id"]:
-                raise Conflict("continue must be invoked in the bound coordinator pane")
+                raise Conflict(f"{name} must be invoked in the bound coordinator pane")
             if coordinator["agent_status"] not in ("idle", "done"):
-                raise Conflict("wait for the coordinator to become idle before confirming")
+                raise Conflict("wait for the coordinator to become idle before this operation")
+            if name == "archive":
+                return store.archive(herdr.socket, panel["dispatch"])
             return store.ack_action(herdr.socket, event["seq"],
                                     {**context, "plugin_id": PLUGIN_ID, "action_id": name})
         raise ValueError(f"unknown action: {name}")
@@ -311,7 +316,7 @@ def poll_once(store, herdr, now=None):
         store.update_session(herdr.socket, enabled=0, error="coordinator identity changed; rebind explicitly")
         return "identity_changed"
     for dispatch in store.rows("""SELECT * FROM dispatches WHERE socket=?
-            AND completed_at IS NULL AND abandoned_at IS NULL""", (herdr.socket,)):
+            AND completed_at IS NULL AND abandoned_at IS NULL AND archived_at IS NULL""", (herdr.socket,)):
         try:
             worker = herdr.agent(dispatch["target"])
         except HerdrError as error:
@@ -340,7 +345,7 @@ def poll_once(store, herdr, now=None):
         return "awaiting_user"
     elif head:
         followups = store.rows("""SELECT id,accepted_at,ui_status FROM dispatches
-            WHERE parent_seq=? AND abandoned_at IS NULL""", (head["seq"],))
+            WHERE parent_seq=? AND abandoned_at IS NULL AND archived_at IS NULL""", (head["seq"],))
         waiting = [item for item in followups if item["accepted_at"] is None]
         attention = [item for item in waiting if item["ui_status"] in ("blocked", "missing", "replaced")]
         if waiting and not attention:
