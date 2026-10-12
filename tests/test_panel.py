@@ -96,6 +96,41 @@ class PanelTests(unittest.TestCase):
                 self.assertEqual(self.herdr.invoke_action.call_count, 1)
                 self.assertEqual(self.herdr.invoke_action.call_args.args[0], name)
 
+    def test_home_focus_button_and_key_submit_directly_and_keep_original_context(self):
+        first = self.present(self.report())
+        before = self.store.status(fixtures.SOCKET)
+        self.herdr.env["HERDR_PLUGIN_CONTEXT_JSON"] = json.dumps({"focused_pane_id": "w1:other"})
+        for mouse in (True, False):
+            with self.subTest(mouse=mouse):
+                panel = Panel(self.store, self.herdr)
+                self.herdr.invoke_action.reset_mock()
+                if mouse:
+                    self.click(panel, ("key", ord("f")))
+                else:
+                    panel.key(ord("f"))
+                name, context = self.herdr.invoke_action.call_args.args
+                self.assertEqual(name, "focus")
+                self.assertEqual(context["focused_pane_id"], "w1:other")
+                self.assertEqual(json.loads(context["correlation_id"])["identity"], before["session"]["identity"])
+                with self.assertRaises(Conflict):
+                    panel.key(ord("f"))
+                self.assertEqual(self.herdr.invoke_action.call_count, 1)
+                self.herdr.call = Mock(side_effect=lambda *args: {"agents": list(self.herdr.agents.values())}
+                                       if args == ("agent", "list") else {"logs": [{"log_id": "test-log", "status": "succeeded", "exit_code": 0}]})
+                self.assertTrue(panel.check_action())
+                self.assertEqual(self.store.status(fixtures.SOCKET), before)
+                self.assertEqual(self.store.head(fixtures.SOCKET), first)
+
+    def test_home_focus_without_binding_is_disabled_and_does_not_invoke_action(self):
+        self.store.db.execute("DELETE FROM sessions")
+        self.store.db.commit()
+        panel = Panel(self.store, self.herdr)
+        panel.draw(Screen(24, 80))
+        self.assertNotIn(("key", ord("f")), [hit[3] for hit in panel.hitboxes])
+        with self.assertRaises(Conflict):
+            panel.key(ord("f"))
+        self.herdr.invoke_action.assert_not_called()
+
     def test_mouse_confirmation_keeps_original_head_after_next_is_presented(self):
         first = self.present(self.report())
         second = self.report(self.dispatch("other"), "second")

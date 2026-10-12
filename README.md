@@ -18,6 +18,7 @@ Enter 查看持久回报全文，↑↓ 或 j/k 滚动，q / Esc 返回；主列
 查看、刷新、打开和退出都不确认结果。
 
 支持鼠标的终端中，也可以**单击任务选中、双击任务看全文、滚轮滚动**。
+首页直接点击 **「回到总控」** 或按 **f**，成功后关闭面板并定位到绑定总控，无需进入菜单。
 底部带方括号的按钮和操作菜单可以单击；所选任务整行高亮，详情、菜单和预览各有独立标题。
 窄窗口中的按钮自动换行，缩放后重新计算点击位置。键盘操作仍全部保留。
 
@@ -25,7 +26,7 @@ Enter 查看持久回报全文，↑↓ 或 j/k 滚动，q / Esc 返回；主列
 | --- | --- |
 | 单击任务标题或状态行 | 选中同一任务，不确认结果 |
 | 双击任务 | 打开全文详情 |
-| 单击底部按钮 | 查看详情、操作菜单、历史、刷新或返回/退出 |
+| 单击底部按钮 | 回到总控、查看详情、操作菜单、历史、刷新或返回/退出 |
 | 单击菜单项 | 启动/定位/暂停直接提交；更换/处理完成/归档先打开目标预览 |
 | 单击预览中的确认按钮 | 执行固定目标的操作；取消按钮只返回 |
 | 滚轮 | 主列表移动选择，其他页面滚动正文 |
@@ -37,9 +38,11 @@ Enter 查看持久回报全文，↑↓ 或 j/k 滚动，q / Esc 返回；主列
 历史中的任务详情和回报全文仍可用 Enter 查看。隐藏仅影响显示，不删除记录、不取消任务，也不确认结果。
 worker 已回报完成但结果仍排队、等待用户处理或等待后续接收时继续显示；尚未结束的阻塞任务也会保留。
 
-不想继续处理的任务可以直接归档：在空闲总控窗格打开面板，↑↓ 选中任务，按 m，再选择 **6「归档所选任务」**。
+不想继续处理的任务可以直接归档：在当前 Herdr 会话的任意窗格打开面板，↑↓ 选中任务，按 m，再选择 **6「归档所选任务」**。
 核对预览中的任务目标和执行 Agent，按 y 或单击确认归档按钮。它立即退出待处理列表和回报提醒队列；按 h 仍能查看历史全文。
+归档由插件脚本直接写入 SQLite，无需总控模型执行、回复或处于空闲状态；执行成功后显示“任务已归档”。
 运行中的 Agent 不会被关闭，归档后的接收和回报仍保存，但不再主动提醒。
+若归档当前结果后仍有其他待处理回报，后台会另行提醒总控处理下一条；这条通知不是执行归档的指令。
 归档不表示业务完成，不生成用户完成确认，也不会撤回已经发送的提醒或终止已经执行的操作。
 一次只归档选中的任务派发；同一目标的其他派发、后续任务和未选中的任务保留。重复归档保持原时间，不归档下一条。
 
@@ -50,7 +53,7 @@ worker 已回报完成但结果仍排队、等待用户处理或等待后续接�
 | 3 更换总控 | 候选是打开面板时的 Agent；新旧总控均须空闲 | 先预览明确目标，按 y 切换，保留任务与等待状态 |
 | 4 暂停自动提醒 | 已有绑定 | 等待后台轮询退出；正在工作的 Agent 继续，结果仍可回报 |
 | 5 当前结果已处理完 | 从空闲总控窗格打开，结果已展示并等待你处理 | 预览本条正文，按 y 记录确认，接收齐全后才通知下一条 |
-| 6 归档所选任务 | 从空闲总控窗格打开，列表中选定任务 | 预览目标，按 y 持久归档；历史保留，停止该任务的回报提醒 |
+| 6 归档所选任务 | 当前会话的任意窗格打开，列表中选定任务 | 预览目标，按 y 持久归档；历史保留，停止该任务的回报提醒 |
 
 启动、定位、暂停响应明确的数字菜单选择或单击菜单项。更换、处理结果和归档需预览后按 y 或单击确认按钮；Enter 只看详情，不执行菜单或确认。
 菜单 5 针对首页“当前等待结果”，不是任意选中的任务。菜单、详情和预览页固定显示对象；r 返回主列表刷新。后台换成下一条时，旧预览只能关联原条或被拒绝。
@@ -69,7 +72,8 @@ worker 已回报完成但结果仍排队、等待用户处理或等待后续接�
   等待用户处理 | 文档 Agent | 10-12 09:30
   检查本地测试
   回报排队中 | 测试 Agent | 10-12 09:31
-[ 详情 Enter ] [ 操作 m ] [ 历史 h ] [ 刷新 r ] [ 退出 q ]
+[ 回到总控 f ] [ 详情 Enter ] [ 操作 m ]
+[ 历史 h ] [ 刷新 r ] [ 退出 q ]
 单击选择 · 双击全文 · 滚轮滚动
 ```
 
@@ -136,11 +140,11 @@ herdr --version
 herdr status server
 python3 --version
 git --version
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.0
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.1
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
-核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.0、`enabled` 为 true，来源与 ref 符合预期。
+核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.1、`enabled` 为 true，来源与 ref 符合预期。
 交互安装会展示信任预览；已授权的非交互安装可加 `--yes`。命令依据 [官方 CLI 文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
 Codex 用户先检查 integration，仅在缺失或过期时安装：
@@ -302,7 +306,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 ```text
 请安装并配置 Herdr Orchestrator：
 仓库：<owner>/herdr-orchestrator-plugin（从当前仓库地址填写）
-版本：v0.6.0
+版本：v0.6.1
 总控：<用户指定的现有代理名或窗格 ID>
 
 1. 确认 HERDR_ENV=1；检查 Herdr 客户端、当前运行服务的版本和兼容性、Python 3.11+、Git。
@@ -310,7 +314,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
    核对目标代理已发送第一条普通消息且有 agent_session.value，缺失就报告具体问题，不猜身份。
 2. 若已安装，先列出受影响的启用会话并暂停其编排，等待旧轮询进程退出，做 SQLite 一致备份。
    GitHub 安装版按新 ref 重新 install，无需先 uninstall；本地 link 先按官方流程处理，不删除源码或状态。
-3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.0 --yes。
+3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.1 --yes。
    再读 herdr plugin list --plugin herdr-orchestrator --json，核对来源、ref、version、enabled，获取 plugin_root。
 4. 确定实际 state-dir 与当前服务 socket：优先使用实际插件上下文的 HERDR_PLUGIN_STATE_DIR。
    若按官方对应版本的目录规则定位，必须核对运行服务的 HOME/XDG_STATE_HOME 和 release/debug 类型。
@@ -338,20 +342,20 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 然后按新 ref 重新安装 GitHub 版，**无需先卸载**：
 
 ```sh
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.0 --yes
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.1 --yes
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
 按官方重装流程更新 GitHub 安装版并保留配置和状态；重装不会自动重启插件运行进程。
 从 plugin list 重新取得实际 plugin_root，核对原状态目录与版本；确认旧轮询已停，再用新版入口恢复各会话绑定。
-旧版本入口不能打开升级后的 schema v4。已有 worker 的任务和执行过程保留；在它空闲时提供新版 CLI 回报入口，
+v0.4 和更早版本的入口不能打开 schema v4。已有 worker 的任务和执行过程保留；在它空闲时提供新版 CLI 回报入口，
 沿用原 state-dir、socket、派发 ID、message ID 和结果文件，不重新派发或重做业务。旧命令报版本错误时也是如此处理。
 旧状态弹窗不会随安装自动替换运行中的进程：先关闭旧弹窗，再重新打开。
 新版用 q 退出；旧版 q 不响应时，确认当前处于该状态弹窗内，再按 Ctrl+C，只退出视图。
 不要在 Agent 窗格盲按 Ctrl+C。回到主界面后 Ctrl+B 松开再 Shift+R 刷新，再 Ctrl+B 松开再 Shift+O 打开新面板。
 参见 [官方 CLI 的重装规则](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
-v0.5 和 v0.6 均使用 schema v4；v0.6 只调整面板显示与输入，不新增数据库迁移。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
+v0.5 和 v0.6 均使用 schema v4；v0.6.0/0.6.1 不新增数据库迁移；v0.6.1 增加首页定位入口，面板归档不再要求总控窗格或空闲。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
 从 v0.1.0 或 v0.2.x 升级时，先沿用 schema v1/v2 至 v3 的迁移，保留展示与消息确认字段，新增确认来源和动作 context，再迁移至 v4。
 原任务、回报、摘要、序号和接收记录保留；pending/handling 不自动 done，旧 done 不伪造用户确认。
 只有既有确认时点和非空原话同时存在，迁移才标为 message；缺证据的历史确认来源保留为空，不补造动作或消息。
@@ -433,7 +437,7 @@ CLI archive --dispatch DISPATCH_ID
 确认先于 accept 时保留原确认和来源，未撤销、未归档的后续派发接收齐全后自动出队，不要求重说。
 确认后结束本回合，下一条由轮询唤醒，不批量 next。finish 已移除；abandon 撤销回报资格，不停止 worker。
 archive 由绑定总控在用户明确指定任务后执行，校验会话，按派发 ID 幂等归档，不调用 next，也不修改原回报确认。
-面板归档动作通过原生 API 关联固定所选任务，不能在没有选中任务的普通动作菜单里直接执行。模型不得自行选择待处理任务归档来缩短列表。
+面板归档动作通过原生 API 关联固定所选任务，脚本校验当前会话与预览绑定后直接持久归档，不调用模型、不要求总控存活或空闲；没有选中任务时不能直接执行。模型不得自行选择待处理任务归档来缩短列表。
 
 </details>
 

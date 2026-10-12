@@ -186,6 +186,11 @@ def perform_action(store, herdr, name):
         if name == "install-shortcuts":
             from .shortcuts import install_shortcuts
             return install_shortcuts(herdr)
+        if name == "archive":
+            session = store.session(herdr.socket)
+            if session["identity"] != panel.get("identity"):
+                raise Conflict("总控已变化，请刷新后再操作")
+            return store.archive(herdr.socket, panel["dispatch"])
         current = store.one("SELECT * FROM sessions WHERE socket=?", (herdr.socket,))
         if name in ("start", "switch"):
             target = current["coordinator"] if name == "start" and current else context.get("focused_pane_id")
@@ -225,13 +230,11 @@ def perform_action(store, herdr, name):
             raise Conflict("总控已变化，请刷新后再操作")
         if name == "focus":
             return herdr.call("agent", "focus", coordinator["pane_id"])
-        if name in ("continue", "archive"):
+        if name == "continue":
             if context.get("focused_pane_id") != coordinator["pane_id"]:
                 raise Conflict(f"{name} must be invoked in the bound coordinator pane")
             if coordinator["agent_status"] not in ("idle", "done"):
                 raise Conflict("wait for the coordinator to become idle before this operation")
-            if name == "archive":
-                return store.archive(herdr.socket, panel["dispatch"])
             return store.ack_action(herdr.socket, event["seq"],
                                     {**context, "plugin_id": PLUGIN_ID, "action_id": name})
         raise ValueError(f"unknown action: {name}")

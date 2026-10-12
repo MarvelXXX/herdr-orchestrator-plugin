@@ -141,10 +141,10 @@ class ArchiveTests(unittest.TestCase):
         panel.key(ord("h"))
         self.assertEqual(len(panel.data["tasks"]), 2)
 
-    def test_archive_action_rejects_invalid_context_focus_busy_and_identity(self):
+    def test_archive_action_rejects_invalid_context_binding_and_other_session(self):
         task = self.dispatch()
         before = self.store.status(fixtures.SOCKET)
-        for change in ("plugin", "action", "no_selection", "focus", "busy", "identity", "other_session"):
+        for change in ("plugin", "action", "no_selection", "identity", "other_session"):
             with self.subTest(change=change):
                 self.herdr.agents["coordinator"] = fixtures.agent("coordinator")
                 context = self.context(task["id"])
@@ -155,12 +155,10 @@ class ArchiveTests(unittest.TestCase):
                     self.herdr.env["HERDR_PLUGIN_ACTION_ID"] = "continue"
                 elif change == "no_selection":
                     context.pop("correlation_id")
-                elif change == "focus":
-                    context["focused_pane_id"] = "w1:other"
-                elif change == "busy":
-                    self.herdr.agents["coordinator"]["agent_status"] = "working"
                 elif change == "identity":
-                    self.herdr.agents["coordinator"]["agent_session"]["value"] = "replacement"
+                    selected = json.loads(context["correlation_id"])
+                    selected["identity"] = "old-binding"
+                    context["correlation_id"] = json.dumps(selected)
                 else:
                     self.store.bind("/tmp/other-archive-session.sock", "coordinator", identity(fixtures.agent("coordinator")))
                     other = self.store.create_dispatch("/tmp/other-archive-session.sock", "other-task", "other",
@@ -170,6 +168,29 @@ class ArchiveTests(unittest.TestCase):
                 with self.assertRaises(Conflict):
                     perform_action(self.store, self.herdr, "archive")
                 self.assertEqual(self.store.status(fixtures.SOCKET), before)
+
+    def test_panel_archive_runs_directly_from_other_pane_without_live_coordinator(self):
+        first = self.present(self.report())
+        second = self.report(self.dispatch("other"), "second")
+        self.herdr.env["HERDR_PLUGIN_CONTEXT_JSON"] = json.dumps({"focused_pane_id": "w1:other"})
+        self.herdr.agents["coordinator"]["agent_status"] = "working"
+        panel = Panel(self.store, self.herdr)
+        panel.key(ord("m"))
+        panel.key(ord("6"))
+        panel.key(ord("y"))
+        name, context = self.herdr.invoke_action.call_args.args
+        self.assertEqual(name, "archive")
+        self.assertEqual(context["focused_pane_id"], "w1:other")
+        self.herdr.agent = Mock(side_effect=AssertionError("archive must not depend on a live agent"))
+        self.herdr.call = Mock(side_effect=AssertionError("archive must not send an agent prompt"))
+        archived = self.action(context)
+        self.assertIsNotNone(archived["archived_at"])
+        self.assertEqual(self.action(context), archived)
+        self.assertEqual(self.store.head(fixtures.SOCKET), second)
+        self.assertEqual(self.store.one("SELECT * FROM events WHERE seq=?", (first["seq"],)), first)
+        self.assertEqual(self.herdr.prompts, [])
+        self.herdr.agent.assert_not_called()
+        self.herdr.call.assert_not_called()
 
     def test_cli_archive_is_explicit_and_only_bound_coordinator_can_run_it(self):
         task = self.dispatch()

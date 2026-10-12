@@ -155,7 +155,6 @@ def task_detail(task, data):
 def readable_error(message):
     translations = {
         "continue must be invoked": "请在已绑定总控的窗格打开面板；定位后关闭并重新打开。",
-        "archive must be invoked": "请在已绑定总控的窗格打开面板后归档任务。",
         "wait for the coordinator": "总控正在忙，请等它空闲后再操作。",
         "current coordinator is busy": "原总控正在忙，不能中途更换。",
         "selected coordinator must be idle": "候选 Agent 尚未空闲，请稍后重开面板。",
@@ -226,7 +225,7 @@ class Panel:
             "switch": f"更换总控为：{label}\n原总控和候选均须空闲；保留任务、回报和等待状态。",
             "stop": f"暂停自动提醒：{label}\n停止自动提醒，正在工作的 Agent 继续工作，结果仍可回报。",
             "continue": "当前结果已处理完\n只确认这一条已处理完；后续 Agent 接收齐全后再提醒下一条。",
-            "archive": "归档所选任务\n退出待处理列表和提醒队列，保留历史；Agent 工作继续。\n只归档所选任务，其他后续任务保留；归档不代表业务完成。",
+            "archive": "归档所选任务\n插件脚本直接执行，无需总控回复或空闲。\n退出待处理列表和提醒队列，保留历史；Agent 工作继续。\n只归档所选任务，其他后续任务保留；归档不代表业务完成。",
         }
         lines = [descriptions[name]]
         if name == "continue":
@@ -269,7 +268,7 @@ class Panel:
                     error = json.loads(raw).get("error", raw)
                 except json.JSONDecodeError:
                     error = raw
-                self.message = readable_error(str(error))
+                self.message = "操作失败：" + readable_error(str(error))
                 return False
             self.message = {"start": "已启动 / 恢复，等待总控准备就绪。", "switch": "已更换总控，等待总控准备就绪。",
                             "stop": "已暂停自动提醒，Agent 工作继续。", "continue": "这条已记为处理完成；接收齐全后再提醒下一条。",
@@ -304,6 +303,11 @@ class Panel:
             self.refresh()
             self.offset = 0
             self.message = "显示全部历史；查看不会确认结果。" if self.show_history else "仅显示待处理任务；历史记录保留。"
+        elif key == ord("f") and self.view == "home":
+            if self.pending:
+                raise Conflict("已有动作等待完成，请先查看日志")
+            self.prepare("focus")
+            self.submit()
         elif self.view == "menu" and key in map(ord, "123456"):
             if self.pending:
                 raise Conflict("已有动作等待完成，请先查看日志")
@@ -381,7 +385,7 @@ class Panel:
                     "  已有绑定只恢复原总控", "2 定位总控：" + coordinator, "  关闭面板后在总控处重新打开", "3 更换总控为打开面板的 Agent：" + candidate,
                     "  新旧总控均须空闲，任务与等待状态保留", "4 暂停自动提醒：Agent 工作继续，不丢回报",
                     "5 当前结果已处理完：" + ("仅确认面板显示的这一条" if self.data["head"] and self.data["head"]["state"] == "awaiting_user" else "暂无已展示的结果"),
-                    "6 归档所选任务：" + selected, "  停止此任务的回报提醒，保留历史；Agent 工作继续"]
+                    "6 归档所选任务：" + selected, "  脚本直接执行，无需总控空闲；保留历史，Agent 继续"]
         if self.view == "confirm":
             return self.confirm[2] + ["", "按 y 明确执行；Esc / q 返回。Enter 不执行。"]
         if self.view == "detail":
@@ -397,7 +401,7 @@ class Panel:
 
     def toolbar(self, width):
         if self.view == "home":
-            buttons = [("详情 Enter", 10), ("操作 m", ord("m")),
+            buttons = [("回到总控 f", ord("f")), ("详情 Enter", 10), ("操作 m", ord("m")),
                        ("待处理 h" if self.show_history else "历史 h", ord("h")),
                        ("刷新 r", ord("r")), ("退出 q", ord("q"))]
         elif self.view == "confirm":
@@ -491,7 +495,8 @@ class Panel:
         footer = height - footer_rows
         screen.addstr(footer, 0, clip(self.message, width - 1), curses.A_BOLD)
         for row, x, text, key in toolbar:
-            disabled = self.view == "home" and key == 10 and not self.data["tasks"]
+            disabled = self.view == "home" and ((key == 10 and not self.data["tasks"])
+                                               or (key == ord("f") and not self.data["session"]))
             screen.addstr(footer + 1 + row, x, text, curses.A_DIM if disabled else curses.A_REVERSE)
             if not disabled:
                 self.hitboxes.append((footer + 1 + row, x, x + cells(text), ("key", key)))
