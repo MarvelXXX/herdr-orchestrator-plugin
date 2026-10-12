@@ -282,6 +282,29 @@ class ActionTests(unittest.TestCase):
         self.herdr.call.assert_called_once_with("agent", "focus", agent("coordinator")["pane_id"])
         self.assertEqual(self.store.head(SOCKET), event)
 
+    def test_focus_can_reach_restarted_coordinator_without_granting_new_identity(self):
+        event = self.present(self.report())
+        before = self.store.status(SOCKET)
+        self.herdr.agents["coordinator"]["agent_session"]["value"] = "new-conversation"
+        self.herdr.call = unittest.mock.Mock(return_value={"focused": True})
+        self.action("focus", "other")
+        self.herdr.call.assert_called_once_with("agent", "focus", "w1:coordinator")
+        self.assertEqual(self.store.status(SOCKET), before)
+        self.assertEqual(self.store.head(SOCKET), event)
+        with self.assertRaises(Conflict):
+            self.action("continue")
+
+    def test_explicit_switch_after_conversation_change_recovers_same_pane(self):
+        event = self.present(self.report())
+        self.herdr.agents["coordinator"]["agent_session"]["value"] = "new-conversation"
+        self.store.update_session(SOCKET, enabled=0, error="coordinator identity changed; rebind explicitly")
+        result = self.action("switch")
+        self.assertEqual(result["session"]["identity"], identity(self.herdr.agent("coordinator")))
+        self.assertTrue(result["session"]["enabled"])
+        self.assertFalse(result["session"]["activated"])
+        self.assertIsNone(result["session"]["error"])
+        self.assertEqual(self.store.head(SOCKET), event)
+
     def test_cli_action_entrypoint_executes_with_actual_action_environment(self):
         event = self.present(self.report())
         env = {"HERDR_PLUGIN_ID": PLUGIN_ID, "HERDR_PLUGIN_ACTION_ID": "continue",

@@ -113,7 +113,7 @@ def overview(data):
         lines = [f"总控：{label}", "状态：" + state,
                  f"最近检查：{timestamp(session['tick_at'])}"]
         if session["error"]:
-            lines.append("自动提醒异常：" + session["error"] + "；查看详情和插件日志，按已有授权处理。")
+            lines.append("自动提醒异常：" + readable_error(session["error"]))
     if not head:
         lines.append("当前没有等待的结果；Agent 可以继续工作。")
     else:
@@ -154,6 +154,8 @@ def task_detail(task, data):
 
 def readable_error(message):
     translations = {
+        "coordinator identity changed": "总控已换会话。回到总控，重开后按 r，再选操作 3。",
+        "选中的 Agent 身份已变化": "候选 Agent 已换会话；按 r 刷新，再选择菜单 3 核对新目标。",
         "continue must be invoked": "请在已绑定总控的窗格打开面板；定位后关闭并重新打开。",
         "wait for the coordinator": "总控正在忙，请等它空闲后再操作。",
         "current coordinator is busy": "原总控正在忙，不能中途更换。",
@@ -175,14 +177,6 @@ class Panel:
         self.data = snapshot(store, herdr.socket)
         self.candidate = None
         self.message = "仅查看不会确认结果；按 m 打开操作菜单。"
-        pane = self.context.get("focused_pane_id")
-        if pane:
-            try:
-                self.candidate = herdr.agent(pane)
-                identity(self.candidate)
-            except (HerdrError, Conflict) as error:
-                self.candidate = None
-                self.message = "当前窗格不能作为总控：" + str(error)
         self.view, self.selected, self.offset = "home", 0, 0
         if self.data["head"]:
             self.selected = next(i for i, task in enumerate(self.data["tasks"])
@@ -203,12 +197,21 @@ class Panel:
             self.selected = next((i for i, item in enumerate(self.data["tasks"]) if item["id"] == fallback), 0)
         try:
             agents = self.herdr.call("agent", "list")["agents"]
+            self.candidate = next((agent for agent in agents
+                                   if agent["pane_id"] == self.context.get("focused_pane_id")), None)
+            if self.candidate:
+                try:
+                    identity(self.candidate)
+                except Conflict:
+                    self.candidate = None
+                    self.message = "当前 Agent 尚无会话身份；先发送一条普通消息，再按 r 刷新。"
             self.data["agent_labels"] = {key: agent_label(agent) for agent in agents
                                          for key in (agent.get("name"), agent["pane_id"]) if key}
             if self.data["session"]:
                 target = self.data["session"]["coordinator"]
                 self.data["coordinator_label"] = self.data["agent_labels"].get(target)
         except HerdrError as error:
+            self.candidate = None
             self.message = "Agent 状态查询失败：" + str(error)
 
     def prepare(self, name):
@@ -222,7 +225,7 @@ class Panel:
         descriptions = {
             "start": f"启动 / 恢复总控：{label}\n已有绑定只恢复原总控；未绑定时使用打开面板的 Agent。",
             "focus": f"定位总控：{label}\n仅定位，成功后关闭面板；需重新打开才能在新窗格确认结果。",
-            "switch": f"更换总控为：{label}\n原总控和候选均须空闲；保留任务、回报和等待状态。",
+            "switch": f"更换 / 重新指定总控为：{label}\n原总控和候选均须空闲；保留任务、回报和等待状态。",
             "stop": f"暂停自动提醒：{label}\n停止自动提醒，正在工作的 Agent 继续工作，结果仍可回报。",
             "continue": "当前结果已处理完\n只确认这一条已处理完；后续 Agent 接收齐全后再提醒下一条。",
             "archive": "归档所选任务\n插件脚本直接执行，无需总控回复或空闲。\n退出待处理列表和提醒队列，保留历史；Agent 工作继续。\n只归档所选任务，其他后续任务保留；归档不代表业务完成。",
@@ -382,7 +385,7 @@ class Panel:
             coordinator = self.data.get("coordinator_label") or (self.data["session"] or {}).get("coordinator") or candidate
             selected = goal(self.data["tasks"][self.selected]) if self.data["tasks"] else "没有可归档的任务"
             return ["1 启动 / 恢复：" + coordinator,
-                    "  已有绑定只恢复原总控", "2 定位总控：" + coordinator, "  关闭面板后在总控处重新打开", "3 更换总控为打开面板的 Agent：" + candidate,
+                    "  已有绑定只恢复原总控", "2 定位总控：" + coordinator, "  关闭面板后在总控处重新打开", "3 更换 / 重新指定总控为当前窗格的 Agent：" + candidate,
                     "  新旧总控均须空闲，任务与等待状态保留", "4 暂停自动提醒：Agent 工作继续，不丢回报",
                     "5 当前结果已处理完：" + ("仅确认面板显示的这一条" if self.data["head"] and self.data["head"]["state"] == "awaiting_user" else "暂无已展示的结果"),
                     "6 归档所选任务：" + selected, "  脚本直接执行，无需总控空闲；保留历史，Agent 继续"]

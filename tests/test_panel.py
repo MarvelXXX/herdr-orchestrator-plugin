@@ -540,6 +540,31 @@ class PanelTests(unittest.TestCase):
             perform_action(self.store, self.herdr, name)
         self.assertEqual(self.store.session(fixtures.SOCKET), before)
 
+    def test_refresh_updates_candidate_then_switch_can_recover_new_conversation(self):
+        event = self.present(self.report())
+        panel = Panel(self.store, self.herdr)
+        panel.prepare("switch")
+        first = panel.confirm[1]["identity"]
+        replacement = fixtures.agent("coordinator")
+        replacement["agent_session"]["value"] = "new-conversation"
+        self.herdr.agents["coordinator"] = replacement
+        self.assertEqual(panel.confirm[1]["identity"], first)
+        panel.key(ord("r"))
+        self.assertEqual(identity(panel.candidate), identity(replacement))
+        self.store.update_session(fixtures.SOCKET, enabled=0, error="coordinator identity changed; rebind explicitly")
+        panel.key(ord("r"))
+        panel.key(ord("m"))
+        panel.key(ord("3"))
+        panel.key(ord("y"))
+        name, context = self.herdr.invoke_action.call_args.args
+        self.herdr.env = {"HERDR_PLUGIN_ID": PLUGIN_ID, "HERDR_PLUGIN_ACTION_ID": name,
+                          "HERDR_PLUGIN_CONTEXT_JSON": json.dumps(context)}
+        with patch("herdr_orchestrator.runtime.spawn_daemon", return_value={"running_pid": 1}):
+            result = perform_action(self.store, self.herdr, name)
+        self.assertEqual(result["session"]["identity"], identity(replacement))
+        self.assertIsNone(result["session"]["error"])
+        self.assertEqual(self.store.head(fixtures.SOCKET), event)
+
     def test_simple_menu_choices_submit_once_without_extra_confirmation(self):
         for key, name in (("1", "start"), ("2", "focus"), ("4", "stop")):
             with self.subTest(name=name):

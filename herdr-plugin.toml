@@ -1,6 +1,6 @@
 id = "herdr-orchestrator"
 name = "Orchestrator"
-version = "0.6.2"
+version = "0.6.3"
 min_herdr_version = "0.9.3"
 description = "Persistent user-acknowledged FIFO, worker receipts and a polling coordinator wake-up."
 platforms = ["linux", "macos"]
@@ -19,7 +19,7 @@ command = ["python3", "orchestrator.py", "action", "start"]
 
 [[actions]]
 id = "switch"
-title = "更换总控为当前 Agent"
+title = "更换 / 重新指定总控为当前 Agent"
 contexts = ["pane"]
 command = ["python3", "orchestrator.py", "action", "switch"]
 

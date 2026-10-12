@@ -262,12 +262,12 @@ def perform_action(store, herdr, name):
             return {"session": session, "daemon": spawn_daemon(store, herdr.socket)}
         session = store.session(herdr.socket)
         coordinator = herdr.agent(session["coordinator"])
-        if identity(coordinator) != session["identity"]:
-            raise Conflict("coordinator identity changed; switch explicitly")
         if panel is not None and session["identity"] != panel.get("identity"):
             raise Conflict("总控已变化，请刷新后再操作")
         if name == "focus":
             return herdr.call("agent", "focus", coordinator["pane_id"])
+        if identity(coordinator) != session["identity"]:
+            raise Conflict("coordinator identity changed; switch explicitly")
         if name == "continue":
             if context.get("focused_pane_id") != coordinator["pane_id"]:
                 raise Conflict(f"{name} must be invoked in the bound coordinator pane")

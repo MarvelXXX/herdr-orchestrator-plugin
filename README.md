@@ -14,13 +14,15 @@ herdr plugin action invoke status --plugin herdr-orchestrator
 
 在空闲 Agent 窗格打开面板，按 m 进入操作菜单，选择“启动 / 恢复”。首次绑定这个 Agent；
 已有绑定只恢复原总控。向总控发任务后，面板显示执行 Agent、中文状态和当前等待的结果。
-Enter 查看持久回报全文，↑↓ 或 j/k 滚动，q / Esc 返回；主列表每两秒只读刷新并保留所选任务。
+Enter 查看持久回报全文，↑↓ 或 j/k 滚动，q / Esc 返回；主列表每两秒只读刷新并保留所选任务，同时更新打开面板那个窗格的候选 Agent；按 r 也刷新其当前身份。
 查看、刷新、打开和退出都不确认结果。
 
 支持鼠标的终端中，也可以**单击任务选中、双击任务看全文、滚轮滚动**。
 首页直接点击 **「回到总控」** 或按 **f**，成功后关闭面板并定位到绑定总控，无需进入菜单。
 无需打开面板辨认总控：Herdr 展开的 **Agents** 侧栏会显示 **「总控 · 代理名」**（未命名时显示 Agent 类型）。
 启动/恢复自动同步，切换时移除旧标记；暂停显示「总控（已暂停）」并保留绑定。
+总控开启新对话后，先发送一条普通消息，让 Herdr 更新原生会话身份；在该窗格打开面板，按 r 刷新，再用菜单 3 重新指定。
+定位只是回到绑定的窗格，换会话后也能使用；定位本身不授予新会话总控身份。
 标记通过独立的显示元数据提供，不改代理名、空间名、原生会话身份或运行状态；不是权限判断依据。
 底部带方括号的按钮和操作菜单可以单击；所选任务整行高亮，详情、菜单和预览各有独立标题。
 窄窗口中的按钮自动换行，缩放后重新计算点击位置。键盘操作仍全部保留。
@@ -53,7 +55,7 @@ worker 已回报完成但结果仍排队、等待用户处理或等待后续接�
 | --- | --- | --- |
 | 1 启动 / 恢复 | 首次需打开面板的 Agent 有原生身份；已有绑定使用原总控 | 启动自动提醒，等待总控准备就绪 |
 | 2 定位总控 | 已有绑定且身份有效 | 定位后关闭面板，在总控窗格重新打开 |
-| 3 更换总控 | 候选是打开面板时的 Agent；新旧总控均须空闲 | 先预览明确目标，按 y 切换，保留任务与等待状态 |
+| 3 更换 / 重新指定总控 | 候选是打开面板时的 Agent；新旧总控均须空闲 | 先预览明确目标，按 y 切换，保留任务与等待状态 |
 | 4 暂停自动提醒 | 已有绑定 | 等待后台轮询退出；正在工作的 Agent 继续，结果仍可回报 |
 | 5 当前结果已处理完 | 从空闲总控窗格打开，结果已展示并等待你处理 | 预览本条正文，按 y 记录确认，接收齐全后才通知下一条 |
 | 6 归档所选任务 | 当前会话的任意窗格打开，列表中选定任务 | 预览目标，按 y 持久归档；历史保留，停止该任务的回报提醒 |
@@ -144,11 +146,11 @@ herdr --version
 herdr status server
 python3 --version
 git --version
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.2
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
-核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.2、`enabled` 为 true，来源与 ref 符合预期。
+核对运行服务的版本与客户端兼容，JSON 中的版本为 0.6.3、`enabled` 为 true，来源与 ref 符合预期。
 交互安装会展示信任预览；已授权的非交互安装可加 `--yes`。命令依据 [官方 CLI 文档](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
 Codex 用户先检查 integration，仅在缺失或过期时安装：
@@ -205,7 +207,7 @@ herdr server reload-config
 switch 先校验新总控身份与空闲状态，旧总控忙时拒绝；旧窗格已关闭可恢复到新总控，其他传输错误直接上报。
 切换先暂停并有界等待旧轮询释放锁，再重新绑定、启动和激活；不关闭 Agent，不丢弃任务、确认或等待状态。
 同目标重试保留激活状态。等待退出超时会明确报错并保持暂停；等待期间新目标变忙或身份改变也不会绑定。
-focus 仅定位，不读取或确认队列。总控标记只改变 Agents 的显示标签；若自定义侧栏隐藏了 `agent` token，需在 Agents 布局中保留它才能看到。
+focus 仅定位，不读取或确认队列，不因同窗格换了原生会话而阻止定位；重新授权仍需显式 switch。总控标记只改变 Agents 的显示标签；若自定义侧栏隐藏了 `agent` token，需在 Agents 布局中保留它才能看到。
 Spaces 不自动改名或调整个人侧栏布局。参见 [Herdr 显示元数据](https://herdr.dev/docs/cli-reference/#panes)。
 
 ### 3. 发任务并逐条处理
@@ -311,7 +313,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 ```text
 请安装并配置 Herdr Orchestrator：
 仓库：<owner>/herdr-orchestrator-plugin（从当前仓库地址填写）
-版本：v0.6.2
+版本：v0.6.3
 总控：<用户指定的现有代理名或窗格 ID>
 
 1. 确认 HERDR_ENV=1；检查 Herdr 客户端、当前运行服务的版本和兼容性、Python 3.11+、Git。
@@ -319,7 +321,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
    核对目标代理已发送第一条普通消息且有 agent_session.value，缺失就报告具体问题，不猜身份。
 2. 若已安装，先列出受影响的启用会话并暂停其编排，等待旧轮询进程退出，做 SQLite 一致备份。
    GitHub 安装版按新 ref 重新 install，无需先 uninstall；本地 link 先按官方流程处理，不删除源码或状态。
-3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.2 --yes。
+3. 执行 herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3 --yes。
    再读 herdr plugin list --plugin herdr-orchestrator --json，核对来源、ref、version、enabled，获取 plugin_root。
 4. 确定实际 state-dir 与当前服务 socket：优先使用实际插件上下文的 HERDR_PLUGIN_STATE_DIR。
    若按官方对应版本的目录规则定位，必须核对运行服务的 HOME/XDG_STATE_HOME 和 release/debug 类型。
@@ -347,7 +349,7 @@ stop 保留 worker 与历史，已派发 worker 仍可回报；恢复时执行 s
 然后按新 ref 重新安装 GitHub 版，**无需先卸载**：
 
 ```sh
-herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.2 --yes
+herdr plugin install <owner>/herdr-orchestrator-plugin --ref v0.6.3 --yes
 herdr plugin list --plugin herdr-orchestrator --json
 ```
 
@@ -360,7 +362,7 @@ v0.4 和更早版本的入口不能打开 schema v4。已有 worker 的任务和
 不要在 Agent 窗格盲按 Ctrl+C。回到主界面后 Ctrl+B 松开再 Shift+R 刷新，再 Ctrl+B 松开再 Shift+O 打开新面板。
 参见 [官方 CLI 的重装规则](https://github.com/herdrdev/herdr/blob/master/docs/next/website/src/content/docs/cli-reference.mdx)。
 
-v0.5 和 v0.6 均使用 schema v4；v0.6.x 不新增数据库迁移；v0.6.1 增加首页定位与独立面板归档，v0.6.2 增加 Herdr Agents 总控显示标记。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
+v0.5 和 v0.6 均使用 schema v4；v0.6.x 不新增数据库迁移；v0.6.1 增加首页定位与独立面板归档，v0.6.2 增加 Herdr Agents 总控显示标记；v0.6.3 修复换对话后的定位和候选身份刷新。从更早版本升级时，事务新增任务归档时间字段，已有任务默认未归档；原记录不自动清理。
 从 v0.1.0 或 v0.2.x 升级时，先沿用 schema v1/v2 至 v3 的迁移，保留展示与消息确认字段，新增确认来源和动作 context，再迁移至 v4。
 原任务、回报、摘要、序号和接收记录保留；pending/handling 不自动 done，旧 done 不伪造用户确认。
 只有既有确认时点和非空原话同时存在，迁移才标为 message；缺证据的历史确认来源保留为空，不补造动作或消息。
@@ -368,6 +370,8 @@ v0.3 与 v0.4 使用 schema v3，相互兼容；它们不支持本次的 schema 
 未归档任务的等待用户状态在暂停和重开后保持；归档记录也不会因重启重新进入提醒队列。显式更换总控仍需激活 skill。
 
 ## 故障排查
+
+总控提示身份变化时，表示 Herdr 当前上报的原生会话与插件保存的身份不一致，常见于开启新对话。不要将模型说“我是总控”视为已绑定：先发一条普通消息建立当前身份，再点击“回到总控”，在该窗格重开面板，按 r 并选择 3 重新指定；历史、回报和用户确认保留。旧预览仍拒绝新的身份，必须刷新后重新预览。
 
 | 现象 | 检查和处理 |
 | --- | --- |
